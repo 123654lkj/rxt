@@ -89,6 +89,7 @@ enum Command {
         #[arg(short, long)] types: bool,
         #[arg(short, long)] deep: bool,
         #[arg(long)] extract: Option<String>,
+        #[arg(long, help = "JSON 输出 [{file, kind, name, signature, line}]")] json: bool,
     },
     #[command(about = "差异对比")]
     Diff {
@@ -375,8 +376,8 @@ fn main() -> anyhow::Result<()> {
         Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex, json, max_results, head, offset } => {
             find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote_channel.as_ref())?;
         }
-        Command::Struct { path, functions, types, deep, extract } => {
-            struct_mod::run(&path, functions, types, deep, extract.as_deref())?;
+        Command::Struct { path, functions, types, deep, extract, json } => {
+            struct_mod::run(&path, functions, types, deep, extract.as_deref(), json)?;
         }
         Command::Diff { first, second, context, stat, ai } => {
             diff::run(&first, second.as_deref(), context, stat, ai)?;
