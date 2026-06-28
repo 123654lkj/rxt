@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+
+# Cargo lock is committed for binary crates
+# (rxt is a binary — keep Cargo.lock tracked)
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
