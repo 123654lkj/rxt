@@ -436,6 +436,10 @@ enum Command {
         #[arg(long, help = "首个失败即停,显示diff")] first_fail: bool,
         #[arg(long)] json: bool,
     },
+    #[command(about = "MCP server 模式 (stdio JSON-RPC, 暴露全部命令给 AI)")]
+    Mcp {
+        #[arg(long, help = "SSE 端口(暂未实现,本地用 stdio)")] sse: Option<u16>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -495,6 +499,7 @@ mod recipe;
 mod bench;
 mod watch_run;
 mod evolve;
+mod mcp;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -790,6 +795,9 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Evolve { reference, candidate, inputs, mode, timeout, first_fail, json } => {
             evolve::run(&reference, &candidate, &inputs, &mode, timeout, first_fail, json)?;
+        }
+        Command::Mcp { sse } => {
+            mcp::run(sse)?;
         }
     }
     Ok(())
