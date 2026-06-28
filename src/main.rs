@@ -333,6 +333,35 @@ enum Command {
         #[arg(long, help = "端口监听检查")] port: Option<String>,
         #[arg(long)] json: bool,
     },
+    // ===== 高效工具族 (v0.4.0+) =====
+    #[command(about = "自我更新 — git pull + 编译 + 热替换(自举封神)")]
+    Upgrade {
+        #[arg(long, help = "仓库路径(默认自动探测)")] repo: Option<String>,
+        #[arg(long, help = "只检查不升级")] check: bool,
+        #[arg(long, help = "指定 feature")] features: Option<String>,
+        #[arg(long, help = "只 pull 不编译")] no_build: bool,
+    },
+    #[command(about = "HTTP 文件服务器 — 手机扫码秒访问")]
+    Serve {
+        dir: Option<String>,
+        #[arg(short, long, default_value_t = 8000)] port: u16,
+        #[arg(long, help = "不显示二维码")] no_qr: bool,
+    },
+    #[command(about = "文件/目录时光机 — 快照 + 回滚")]
+    Snapshot {
+        target: Option<String>,
+        #[arg(short, long, help = "快照标签")] label: Option<String>,
+        #[arg(long, help = "列出快照")] list: bool,
+        #[arg(long, help = "回滚到某快照")] restore: Option<String>,
+        #[arg(long, help = "对比快照与当前")] diff: Option<String>,
+        #[arg(long, help = "清理 N 天前的")] clean: Option<u64>,
+    },
+    #[command(about = "终端二维码(扫码访问)")]
+    Qr {
+        text: Option<String>,
+        #[arg(long)] invert: bool,
+        #[arg(long)] compact: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -377,6 +406,11 @@ mod ps;
 mod service;
 mod reg;
 mod net;
+// 高效工具族 (v0.4.0+)
+mod upgrade;
+mod serve;
+mod snapshot;
+mod qr;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -632,6 +666,19 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Net { conn, resolve, route, port, json } => {
             net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json)?;
+        }
+        Command::Upgrade { repo, check, features, no_build } => {
+            upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;
+        }
+        Command::Serve { dir, port, no_qr } => {
+            serve::run(dir.as_deref(), port, no_qr)?;
+        }
+        Command::Snapshot { target, label, list, restore, diff, clean } => {
+            snapshot::run(target.as_deref(), label.as_deref(), list, restore.as_deref(), diff.as_deref(), clean)?;
+        }
+        Command::Qr { text, invert, compact } => {
+            let t = text.ok_or_else(|| anyhow::anyhow!("需要内容,如: rxt qr \"https://...\""))?;
+            qr::run(&t, invert, compact)?;
         }
     }
     Ok(())
