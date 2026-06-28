@@ -151,11 +151,11 @@ enum Command {
     #[command(about = "JSON 查询/格式化")]
     Jq {
         query: Option<String>,
-        #[arg(short, long)] file: Option<PathBuf>,
-        #[arg(short = 'f', long)] fmt: bool,
-        #[arg(short = 'c', long)] compact: bool,
-        #[arg(short = 'r', long, help = "raw output (strings/numbers without quotes)")] raw: bool,
-        #[arg(short = 's', long, help = "slurp: read all inputs into array")] slurp: bool,
+        #[arg(short = 'f', long = "file")] file: Option<PathBuf>,
+        #[arg(long = "fmt", help = "pretty-print (default behavior)")] fmt: bool,
+        #[arg(short = 'c', long = "compact")] compact: bool,
+        #[arg(short = 'r', long = "raw", help = "raw output (strings/numbers without quotes)")] raw: bool,
+        #[arg(short = 's', long = "slurp", help = "slurp: read all inputs into array")] slurp: bool,
     },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
