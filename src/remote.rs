@@ -37,7 +37,7 @@ mod imp {
                 let key = shellexpand::tilde(key_path).into_owned();
                 session.userauth_pubkey_file(&config.user, None, Path::new(&key), None)?;
             } else if let Some(password) = hosts.get_password(&config) {
-                session.userauth_password(&config.user, password)?;
+                session.userauth_password(&config.user, &password)?;
             } else {
                 // 尝试 agent 认证
                 session.userauth_agent(&config.user)?;
