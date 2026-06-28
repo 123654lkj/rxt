@@ -376,7 +376,7 @@ fn push(remote: &str, force: bool, upstream: bool, branch: Option<&str>) -> anyh
     if let Some(b) = &br { args.push(b.clone()); }
 
     // push 输出去 stderr,用 inherit 让用户直接看进度
-    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -396,7 +396,7 @@ fn pull(remote: &str, rebase: bool, branch: Option<&str>) -> anyhow::Result<()> 
     args.push(remote.into());
     if let Some(b) = &br { args.push(b.clone()); }
 
-    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -407,12 +407,20 @@ fn pull(remote: &str, rebase: bool, branch: Option<&str>) -> anyhow::Result<()> 
 fn fetch(remote: &str, refspec: Option<&str>) -> anyhow::Result<()> {
     let mut args: Vec<String> = vec!["fetch".into(), remote.into()];
     if let Some(r) = refspec { args.push(r.into()); }
-    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
     if status.success() { println!("✓ fetch 完成"); Ok(()) }
     else { anyhow::bail!("fetch 失败 (exit {})", status.code().unwrap_or(-1)) }
+}
+
+/// 构造带 SSH 环境的 git 命令(解决非交互模式 hostkey 校验问题)
+fn git_ssh_command() -> Command {
+    let mut cmd = Command::new("git");
+    // 让 SSH 不卡在 hostkey 确认上(非交互环境必须)
+    cmd.env("GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes");
+    cmd
 }
 
 fn remote_cmd(add: Option<&str>, url: Option<&str>, del: Option<&str>, rename: Option<&str>, to: Option<&str>, set_url: Option<&str>) -> anyhow::Result<()> {
