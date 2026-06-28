@@ -76,8 +76,11 @@ enum Command {
         #[arg(long)] replace: Option<String>,
         #[arg(long = "with")] replace_with: Option<String>,
         #[arg(long)] preview: bool,
-        #[arg(long, help = "query 使用正则")]
-        regex: bool,
+        #[arg(long, help = "query 使用正则")] regex: bool,
+        #[arg(long, help = "JSON 输出")] json: bool,
+        #[arg(long, help = "最大匹配数")] max_results: Option<usize>,
+        #[arg(long, help = "只返回前 N 条")] head: Option<usize>,
+        #[arg(long, default_value = "0", help = "跳过前 N 条")] offset: usize,
     },
     #[command(about = "代码结构分析")]
     Struct {
@@ -293,8 +296,8 @@ fn main() -> anyhow::Result<()> {
                 Command::Grep { pattern, path, context, file_type, count, invert, json, regex: _, max_results, head, offset, jsonl, no_ignore } => {
                     grep::run(pattern, path, *context, file_type.as_deref(), *count, *invert, *json, false, *max_results, *head, *offset, *jsonl, *no_ignore, Some(&remote_channel))?;
                 }
-                Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex: _ } => {
-                    find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), *context, *case_sensitive, *count, *stats, replace.as_deref(), replace_with.as_deref(), *preview, false, Some(&remote_channel))?;
+                Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex: _, json, max_results, head, offset } => {
+                    find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), *context, *case_sensitive, *count, *stats, replace.as_deref(), replace_with.as_deref(), *preview, false, *json, *max_results, *head, *offset, Some(&remote_channel))?;
                 }
                 Command::Replace { target, old, new, all, preview, content } => {
                     let nc: Option<String> = if let Some(f) = new {
@@ -368,8 +371,8 @@ fn main() -> anyhow::Result<()> {
         Command::Cat { path } => cat::run(&path)?,
         Command::Jsonl { path, last, json } => jsonl::run(&path, last, json)?,
         Command::Stat { path, json } => stat::run(&path, json, remote_channel.as_ref())?,
-        Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex } => {
-            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, remote_channel.as_ref())?;
+        Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex, json, max_results, head, offset } => {
+            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote_channel.as_ref())?;
         }
         Command::Struct { path, functions, types, deep, extract } => {
             struct_mod::run(&path, functions, types, deep, extract.as_deref())?;

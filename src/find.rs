@@ -1,5 +1,6 @@
-﻿use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::fs;
+use std::io::{self, Write, BufWriter};
 use crate::signature::{FileSignature, to_utf8_lf};
 use std::collections::BTreeMap;
 use regex::Regex;
@@ -17,6 +18,10 @@ pub fn run(
     replace_with: Option<&str>,
     preview: bool,
     use_regex: bool,
+    json_output: bool,
+    max_results: Option<usize>,
+    head: Option<usize>,
+    offset: usize,
     remote: Option<&crate::remote::RemoteChannel>,
 ) -> anyhow::Result<()> {
     let compiled_re = if use_regex {
@@ -32,28 +37,23 @@ pub fn run(
     };
     let search_dir = path.unwrap_or(Path::new("."));
 
-    // --replace + --with 批量替换（独立分支，query 无关）
     if let (Some(old), Some(new)) = (replace, replace_with) {
         return run_replace(search_dir, name_pattern, file_type, old, new, preview);
     }
 
-    // --stats 模式：query 可选
     if do_stats {
-        return stats_by_type(search_dir);
+        return stats_by_type(search_dir, json_output);
     }
 
-    // --name <pattern> 模式：query 可选
     if let Some(pattern) = name_pattern {
-        return search_by_name(search_dir, pattern, file_type);
+        return search_by_name(search_dir, pattern, file_type, json_output);
     }
 
-    // <query> 内容搜索模式
     if let Some(q) = query {
         let ext_filter = file_type.and_then(|t| ext_for_type(t));
-        return search_content(search_dir, q, ext_filter, context, case_sensitive, count, &compiled_re);
+        return search_content(search_dir, q, ext_filter, context, case_sensitive, count, &compiled_re, json_output, max_results, head, offset);
     }
 
-    // 全部未指定 -> 错误退出，让 shell 拿到非 0 退出码
     anyhow::bail!("no action: provide a <query>, --name <pattern>, --stats, or --replace <old> --with <new>")
 }
 
@@ -74,6 +74,24 @@ fn is_text_file(path: &Path) -> bool {
     )).unwrap_or(false)
 }
 
+/// Iterate files: handles both single-file and directory cases (fixes "single-file mode broken" bug).
+fn for_each_file(target: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&Path)) {
+    if !target.exists() { return; }
+    if target.is_file() {
+        // Single-file mode — apply extension filter and text-file check
+        if let Some(ext) = ext_filter {
+            if target.extension().and_then(|e| e.to_str()) == Some(ext) {
+                cb(target);
+            }
+        } else if is_text_file(target) {
+            cb(target);
+        }
+        return;
+    }
+    if !target.is_dir() { return; }
+    walk_files(target, ext_filter, cb);
+}
+
 fn walk_files(dir: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&Path)) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -91,17 +109,26 @@ fn walk_files(dir: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&Path)) 
     }
 }
 
-fn search_content(dir: &Path, query: &str, ext_filter: Option<&str>, context: usize, case_sensitive: bool, only_count: bool, compiled_re: &Option<Regex>) -> anyhow::Result<()> {
+fn search_content(
+    dir: &Path,
+    query: &str,
+    ext_filter: Option<&str>,
+    context: usize,
+    case_sensitive: bool,
+    only_count: bool,
+    compiled_re: &Option<Regex>,
+    json_output: bool,
+    max_results: Option<usize>,
+    head: Option<usize>,
+    offset: usize,
+) -> anyhow::Result<()> {
     let query_lower = query.to_lowercase();
-    let mut total_matches = 0usize;
-    let mut files_with_matches = 0usize;
-    walk_files(dir, ext_filter, &mut |path| {
+    let mut results: Vec<(PathBuf, usize, String)> = Vec::new();
+    for_each_file(dir, ext_filter, &mut |path| {
         if let Ok(raw) = fs::read(path) {
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
-            let lines: Vec<&str> = content.lines().collect();
-            let mut file_matches = 0usize;
-            for (i, line) in lines.iter().enumerate() {
+            for (i, line) in content.lines().enumerate() {
                 let matched = if let Some(ref re) = compiled_re {
                     re.is_match(line)
                 } else if case_sensitive {
@@ -110,32 +137,55 @@ fn search_content(dir: &Path, query: &str, ext_filter: Option<&str>, context: us
                     line.to_lowercase().contains(&query_lower)
                 };
                 if matched {
-                    file_matches += 1;
-                    if !only_count {
-                        if file_matches == 1 { println!("\n{}:", path.display()); }
-                        let start = if i >= context { i - context } else { 0 };
-                        for ci in start..i { println!("  {:<6}| {}", ci + 1, lines[ci]); }
-                        println!("→ {:<6}| {}", i + 1, line);
-                        let end = (i + context + 1).min(lines.len());
-                        for ci in (i + 1)..end { println!("  {:<6}| {}", ci + 1, lines[ci]); }
-                        println!();
-                    }
+                    results.push((path.to_path_buf(), i + 1, line.to_string()));
                 }
             }
-            if file_matches > 0 { files_with_matches += 1; total_matches += file_matches; }
         }
     });
-    if only_count { println!("Matches: {} in {} files", total_matches, files_with_matches); }
-    else { eprintln!("  {} matches in {} files", total_matches, files_with_matches); }
+
+    // Apply pagination
+    let mut results = results;
+    if offset > 0 {
+        if offset >= results.len() { results.clear(); }
+        else { results = results.split_off(offset); }
+    }
+    if let Some(h) = head { results.truncate(h); }
+    if let Some(m) = max_results { results.truncate(m); }
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    if json_output {
+        let j: Vec<serde_json::Value> = results.iter().map(|(p, ln, t)| {
+            serde_json::json!({"path": p.display().to_string(), "line": ln, "text": t})
+        }).collect();
+        writeln!(out, "{}", serde_json::to_string_pretty(&j)?)?;
+        eprintln!("  {} matches", results.len());
+    } else if only_count {
+        writeln!(out, "Matches: {} (in {} files)", results.len(), {
+            let mut s: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+            for (p, _, _) in &results { s.insert(p); }
+            s.len()
+        })?;
+    } else {
+        let mut current_file: Option<PathBuf> = None;
+        for (path, ln, text) in &results {
+            if current_file.as_ref() != Some(path) {
+                writeln!(out, "\n{}:", path.display())?;
+                current_file = Some(path.clone());
+            }
+            writeln!(out, "  {:<6}| {}", ln, text)?;
+        }
+        eprintln!("  {} matches", results.len());
+    }
+    out.flush()?;
     Ok(())
 }
 
-fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>) -> anyhow::Result<()> {
+fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>, json_output: bool) -> anyhow::Result<()> {
     let ext_filter = file_type.and_then(|t| ext_for_type(t));
     let mut results: Vec<(PathBuf, u64)> = Vec::new();
-    // glob 模式检测: 含 * ? [ 则用 glob 匹配, 否则字面 contains
     let is_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
-    // 预编译 glob -> regex
     let glob_re: Option<regex::Regex> = if is_glob {
         let mut s = String::from("^");
         for c in pattern.chars() {
@@ -157,10 +207,7 @@ fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>) -> anyhow:
         None
     };
     let pattern_lower = pattern.to_lowercase();
-    walk_files(dir, None, &mut |path| {
-        if let Some(ext) = ext_filter {
-            if path.extension().and_then(|e| e.to_str()) != Some(ext) { return; }
-        }
+    for_each_file(dir, ext_filter, &mut |path| {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let matched = if let Some(ref re) = glob_re {
             re.is_match(name)
@@ -172,36 +219,71 @@ fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>) -> anyhow:
         }
     });
     results.sort_by_key(|(_, size)| *size);
-    println!("Found {} files matching '{}':", results.len(), pattern);
-    for (path, size) in &results {
-        let s = if *size > 1048576 { format!("{:.1} MB", *size as f64 / 1048576.0) }
-                else if *size > 1024 { format!("{:.1} KB", *size as f64 / 1024.0) }
-                else { format!("{} B", size) };
-        println!("  {} ({})", path.display(), s);
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    if json_output {
+        let j: Vec<serde_json::Value> = results.iter().map(|(p, s)| {
+            serde_json::json!({"path": p.display().to_string(), "size_bytes": s})
+        }).collect();
+        writeln!(out, "{}", serde_json::to_string_pretty(&j)?)?;
+    } else {
+        writeln!(out, "Found {} files matching '{}':", results.len(), pattern)?;
+        for (path, size) in &results {
+            let s = if *size > 1048576 { format!("{:.1} MB", *size as f64 / 1048576.0) }
+                    else if *size > 1024 { format!("{:.1} KB", *size as f64 / 1024.0) }
+                    else { format!("{} B", size) };
+            writeln!(out, "  {} ({})", path.display(), s)?;
+        }
     }
+    out.flush()?;
     Ok(())
 }
 
-fn stats_by_type(dir: &Path) -> anyhow::Result<()> {
+fn stats_by_type(dir: &Path, json_output: bool) -> anyhow::Result<()> {
     let mut stats: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    let mut total_files = 0usize; let mut total_lines = 0usize;
-    walk_files(dir, None, &mut |path| {
+    let mut total_files = 0usize;
+    let mut total_lines = 0usize;
+    for_each_file(dir, None, &mut |path| {
         let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_string()).unwrap_or_else(|| "_none".to_string());
         if let Ok(raw) = fs::read(path) {
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
             let lines = content.lines().count();
             let entry = stats.entry(ext).or_insert((0, 0));
-            entry.0 += 1; entry.1 += lines;
-            total_files += 1; total_lines += lines;
+            entry.0 += 1;
+            entry.1 += lines;
+            total_files += 1;
+            total_lines += lines;
         }
     });
-    println!("Code Stats for: {}", dir.display());
-    println!("{:<10} {:>8} {:>10}", "Type", "Files", "Lines");
-    println!("{:-<10} {:-<8} {:-<10}", "", "", "");
-    for (ext, (f, l)) in &stats { println!("{:<10} {:>8} {:>10}", ext, f, l); }
-    println!("{:-<10} {:-<8} {:-<10}", "", "", "");
-    println!("{:<10} {:>8} {:>10}", "TOTAL", total_files, total_lines);
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    if json_output {
+        let mut by_type_obj = serde_json::Map::new();
+        for (ext, (f, l)) in &stats {
+            by_type_obj.insert(ext.clone(), serde_json::json!({"files": f, "lines": l}));
+        }
+        let v = serde_json::json!({
+            "path": dir.display().to_string(),
+            "by_type": by_type_obj,
+            "total": {"files": total_files, "lines": total_lines}
+        });
+        writeln!(out, "{}", serde_json::to_string_pretty(&v)?)?;
+    } else {
+        writeln!(out, "Code Stats for: {}", dir.display())?;
+        writeln!(out, "{:<10} {:>8} {:>10}", "Type", "Files", "Lines")?;
+        writeln!(out, "{:-<10} {:-<8} {:-<10}", "", "", "")?;
+        for (ext, (f, l)) in &stats {
+            writeln!(out, "{:<10} {:>8} {:>10}", ext, f, l)?;
+        }
+        writeln!(out, "{:-<10} {:-<8} {:-<10}", "", "", "")?;
+        writeln!(out, "{:<10} {:>8} {:>10}", "TOTAL", total_files, total_lines)?;
+    }
+    out.flush()?;
     Ok(())
 }
 
@@ -211,7 +293,7 @@ fn run_replace(dir: &Path, name_pattern: Option<&str>, file_type: Option<&str>, 
     let mut changed_files = 0usize;
     let mut total_replacements = 0usize;
 
-    walk_files(dir, ext_filter, &mut |path| {
+    for_each_file(dir, ext_filter, &mut |path| {
         if let Some(ref pat) = pattern_lower {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !name.to_lowercase().contains(pat) { return; }
