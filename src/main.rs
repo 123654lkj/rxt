@@ -149,7 +149,14 @@ enum Command {
     },
     #[command(about = "智能 Git 提交")]
     #[command(about = "JSON 查询/格式化")]
-    Jq { query: Option<String>, #[arg(short, long)] file: Option<PathBuf>, #[arg(long)] fmt: bool, #[arg(long)] compact: bool },
+    Jq {
+        query: Option<String>,
+        #[arg(short, long)] file: Option<PathBuf>,
+        #[arg(short = 'f', long)] fmt: bool,
+        #[arg(short = 'c', long)] compact: bool,
+        #[arg(short = 'r', long, help = "raw output (strings/numbers without quotes)")] raw: bool,
+        #[arg(short = 's', long, help = "slurp: read all inputs into array")] slurp: bool,
+    },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
         path: PathBuf,
@@ -407,7 +414,7 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_default();
             tree::run(&path, depth, &ignores, dirs_only, json)?;
         }
-        Command::Jq { query, file, fmt, compact } => jq::run(query.as_deref(), file.as_deref(), fmt, compact)?,
+        Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
                 let mut p = s.splitn(2, ',');
