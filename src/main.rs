@@ -122,8 +122,12 @@ enum Command {
         #[arg(short, long)] count: bool,
         #[arg(short, long)] invert: bool,
         #[arg(short, long)] json: bool,
-        #[arg(long, help = "使用正则表达式")]
-        regex: bool,
+        #[arg(long, help = "使用正则表达式")] regex: bool,
+        #[arg(long, help = "最大匹配数,默认 1000,0 表示无限")] max_results: Option<usize>,
+        #[arg(long, help = "只返回前 N 条")] head: Option<usize>,
+        #[arg(long, default_value = "0", help = "跳过前 N 条")] offset: usize,
+        #[arg(long, help = "JSONL 流式输出(每行一条 JSON)")] jsonl: bool,
+        #[arg(long, help = "不忽略 .git / target / node_modules / vendor / .开头目录")] no_ignore: bool,
     },
     #[command(about = "执行内联 Python")]
     Py { code: Option<String>, #[arg(short, long)] file: Option<PathBuf> },
@@ -286,8 +290,8 @@ fn main() -> anyhow::Result<()> {
                 Command::Cat { path } => {
                     cat::run(path)?;
                 }
-                Command::Grep { pattern, path, context, file_type, count, invert, json, regex: _ } => {
-                    grep::run(pattern, path, *context, file_type.as_deref(), *count, *invert, *json, false, Some(&remote_channel))?;
+                Command::Grep { pattern, path, context, file_type, count, invert, json, regex: _, max_results, head, offset, jsonl, no_ignore } => {
+                    grep::run(pattern, path, *context, file_type.as_deref(), *count, *invert, *json, false, *max_results, *head, *offset, *jsonl, *no_ignore, Some(&remote_channel))?;
                 }
                 Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex: _ } => {
                     find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), *context, *case_sensitive, *count, *stats, replace.as_deref(), replace_with.as_deref(), *preview, false, Some(&remote_channel))?;
@@ -377,8 +381,8 @@ fn main() -> anyhow::Result<()> {
         Command::Sed { path, pattern, replacement, preview, line, regex } => {
             sed::run(&path, &pattern, &replacement, preview, line, regex, remote_channel.as_ref())?;
         }
-        Command::Grep { pattern, path, context, file_type, count, invert, json, regex } => {
-            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, remote_channel.as_ref())?;
+        Command::Grep { pattern, path, context, file_type, count, invert, json, regex, max_results, head, offset, jsonl, no_ignore } => {
+            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, remote_channel.as_ref())?;
         }
         Command::Patch { paths, reverse, check, output } => {
             patch::run(&paths, reverse, check, output.as_deref())?;
