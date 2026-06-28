@@ -142,6 +142,7 @@ enum Command {
         #[arg(short = 'L', long = "depth")] depth: Option<usize>,
         #[arg(short = 'I', long = "ignore")] ignore: Option<String>,
         #[arg(short = 'd', long = "dirs-only")] dirs_only: bool,
+        #[arg(long, help = "JSON 输出")] json: bool,
     },
     #[command(about = "智能 Git 提交")]
     #[command(about = "JSON 查询/格式化")]
@@ -190,7 +191,7 @@ enum Command {
     #[command(about = "列提取")]
     Cut { input: Option<String>, #[arg(short = 'd', long)] delimiter: Option<String>, #[arg(short = 'f', long, required = true)] fields: String, #[arg(short = 's', long)] only_delimited: bool },
     #[command(about = "行/词/字符/字节统计")]
-    Count { input: Option<String>, #[arg(short = 'l', long)] lines: bool, #[arg(short = 'w', long)] words: bool, #[arg(short = 'm', long)] chars: bool, #[arg(short = 'c', long)] bytes: bool, #[arg(short = 'L', long)] max_line: bool },
+    Count { input: Option<String>, #[arg(short = 'l', long)] lines: bool, #[arg(short = 'w', long)] words: bool, #[arg(short = 'm', long)] chars: bool, #[arg(short = 'c', long)] bytes: bool, #[arg(short = 'L', long)] max_line: bool, #[arg(long, help = "JSON 输出")] json: bool },
     #[command(about = "智能 Rust 构建")]
     Build { dir: Option<String>, #[arg(short = 't', long = "target")] target: Option<String>, #[arg(short = 'p', long = "profile")] profile: Option<String>, #[arg(short = 'b', long = "bin")] bin: Option<String>, #[arg(long)] features: Vec<String>, #[arg(long)] workspace: bool, #[arg(long)] list_targets: bool, #[arg(long)] no_config: bool },
     #[command(about = "Rust 代码质量检查")]
@@ -396,11 +397,11 @@ fn main() -> anyhow::Result<()> {
             MemAction::Search { query, top_k } => mem::run_search(&query, top_k)?,
             MemAction::Stats => mem::run_stats()?,
         },
-        Command::Tree { path, depth, ignore, dirs_only } => {
+        Command::Tree { path, depth, ignore, dirs_only, json } => {
             let ignores: Vec<String> = ignore.as_deref()
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
-            tree::run(&path, depth, &ignores, dirs_only)?;
+            tree::run(&path, depth, &ignores, dirs_only, json)?;
         }
         Command::Jq { query, file, fmt, compact } => jq::run(query.as_deref(), file.as_deref(), fmt, compact)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
@@ -443,8 +444,8 @@ fn main() -> anyhow::Result<()> {
         Command::Cut { input, delimiter, fields, only_delimited } => {
             cut::run(input.as_deref(), delimiter, &fields, only_delimited)?;
         }
-        Command::Count { input, lines, words, chars, bytes, max_line } => {
-            count::run(input.as_deref(), lines, words, chars, bytes, max_line)?;
+        Command::Count { input, lines, words, chars, bytes, max_line, json } => {
+            count::run(input.as_deref(), lines, words, chars, bytes, max_line, json)?;
         }
         Command::Build { dir, target, profile, bin, features, workspace, list_targets, no_config } => {
             build::run(dir.as_deref(), target.as_deref(), profile.as_deref(), bin.as_deref(), features, workspace, list_targets, no_config)?;

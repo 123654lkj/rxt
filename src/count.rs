@@ -1,4 +1,4 @@
-﻿// rxt count / wc — 行/词/字符/字节统计
+// rxt count / wc — lines / words / chars / bytes statistics with optional JSON output
 use std::io::{self, Read};
 
 pub fn run(
@@ -8,6 +8,7 @@ pub fn run(
     chars_only: bool,
     bytes_only: bool,
     max_line: bool,
+    json_output: bool,
 ) -> anyhow::Result<()> {
     let content: Vec<u8>;
     let text: &str;
@@ -25,6 +26,31 @@ pub fn run(
     }
 
     let all = !lines_only && !words_only && !chars_only && !bytes_only && !max_line;
+
+    if json_output {
+        // JSON output: always emit path + all metrics (single canonical shape)
+        let mut obj = serde_json::Map::new();
+        if let Some(p) = input {
+            obj.insert("path".to_string(), serde_json::Value::String(p.to_string()));
+        }
+        if all || lines_only {
+            obj.insert("lines".to_string(), serde_json::json!(text.lines().count()));
+        }
+        if all || words_only {
+            obj.insert("words".to_string(), serde_json::json!(text.split_whitespace().count()));
+        }
+        if all || chars_only {
+            obj.insert("chars".to_string(), serde_json::json!(text.chars().count()));
+        }
+        if all || bytes_only {
+            obj.insert("bytes".to_string(), serde_json::json!(content.len()));
+        }
+        if max_line {
+            obj.insert("max_line".to_string(), serde_json::json!(text.lines().map(|l| l.len()).max().unwrap_or(0)));
+        }
+        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(obj))?);
+        return Ok(());
+    }
 
     if all || lines_only {
         let line_count = text.lines().count();
