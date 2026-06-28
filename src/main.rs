@@ -362,6 +362,36 @@ enum Command {
         #[arg(long)] invert: bool,
         #[arg(long)] compact: bool,
     },
+    #[command(about = "系统剪贴板读写 (read/write/clear)")]
+    Clip {
+        action: String,
+        content: Option<String>,
+        #[arg(long, help = "从文件读取内容写入剪贴板")] file: Option<String>,
+    },
+    #[command(about = "轮询重试直到成功/超时 (等端口/文件/命令)")]
+    Repeat {
+        cmd: Option<String>,
+        #[arg(long, help = "等文件出现")] file: Option<String>,
+        #[arg(long, help = "等端口可连(如 5432 或 host:port)")] port: Option<String>,
+        #[arg(long, help = "等主机 ping 通")] ping: Option<String>,
+        #[arg(long, default_value_t = 60, help = "超时秒数")] timeout: u64,
+        #[arg(long, default_value_t = 1000, help = "重试间隔毫秒")] interval: u64,
+        #[arg(long, default_value_t = 0, help = "最大尝试次数(0=不限)")] tries: usize,
+    },
+    #[command(about = "桌面通知 (长任务完成提醒)")]
+    Notify {
+        message: String,
+        #[arg(long)] title: Option<String>,
+        #[arg(long, default_value = "info", help = "info|success|warn|error")] level: String,
+    },
+    #[command(about = "按内容哈希找重复文件 (清理重复照片/下载)")]
+    Dup {
+        dir: String,
+        #[arg(long, default_value = "", help = "最小文件大小(如 1M/500K)")] min_size: String,
+        #[arg(long, help = "扩展名过滤(逗号分隔 jpg,png)")] ext: Option<String>,
+        #[arg(long, help = "删除重复(保留每组第一个)")] delete: bool,
+        #[arg(long)] json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -411,6 +441,10 @@ mod upgrade;
 mod serve;
 mod snapshot;
 mod qr;
+mod clip;
+mod repeat;
+mod notify;
+mod dup;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -679,6 +713,18 @@ fn main() -> anyhow::Result<()> {
         Command::Qr { text, invert, compact } => {
             let t = text.ok_or_else(|| anyhow::anyhow!("需要内容,如: rxt qr \"https://...\""))?;
             qr::run(&t, invert, compact)?;
+        }
+        Command::Clip { action, content, file } => {
+            clip::run(&action, content.as_deref(), file.as_deref())?;
+        }
+        Command::Repeat { cmd, file, port, ping, timeout, interval, tries } => {
+            repeat::run(cmd.as_deref(), file.as_deref(), port.as_deref(), ping.as_deref(), timeout, interval, tries)?;
+        }
+        Command::Notify { message, title, level } => {
+            notify::run(&message, title.as_deref(), &level)?;
+        }
+        Command::Dup { dir, min_size, ext, delete, json } => {
+            dup::run(&dir, &min_size, ext.as_deref(), delete, json)?;
         }
     }
     Ok(())
