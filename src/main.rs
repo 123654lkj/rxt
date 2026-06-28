@@ -174,6 +174,18 @@ enum Command {
         #[arg(short = 'd', long = "depth", help = "递归深度")] depth: Option<usize>,
         #[arg(long, help = "限制最大结果数")] max: Option<usize>,
     },
+    #[command(about = "HTTP 客户端")]
+    Http {
+        #[arg(default_value = "GET")] method: String,
+        url: String,
+        #[arg(short = 'H', long = "header", help = "header: value")] headers: Vec<String>,
+        #[arg(short = 'd', long = "data")] data: Option<String>,
+        #[arg(short = 'j', long = "json", help = "request body is JSON")] json_body: bool,
+        #[arg(long, help = "basic auth: user:pass")] auth: Option<String>,
+        #[arg(short = 't', long = "timeout", default_value = "30")] timeout: u64,
+        #[arg(short = 'i', long = "headers", help = "show response headers")] show_headers: bool,
+        #[arg(short = 'b', long = "body-only")] body_only: bool,
+    },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
         path: PathBuf,
@@ -272,7 +284,8 @@ mod struct_mod;
 mod diff; mod dep; mod sed; mod grep; mod patch; mod tree;
 mod py; mod mem;  mod jq;
 mod unzip;
-mod ls; mod edit; mod hash;
+mod ls;
+mod http; mod edit; mod hash;
 mod uuidgen; mod enc; mod watch; mod timecmd; mod exec;
 mod sort; mod uniq; mod cut; mod count;
 mod build; mod check; mod size; mod clean;
@@ -436,6 +449,7 @@ fn main() -> anyhow::Result<()> {
         Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
         Command::Unzip { archive, target, list_only, json, strip } => unzip::run(&archive, target.as_deref(), list_only, json, strip)?,
         Command::Ls { dir, json, all, sort, depth, max } => ls::run(&dir, json, all, sort.as_deref(), depth, max)?,
+        Command::Http { method, url, headers, data, json_body, auth, timeout: _, show_headers, body_only } => http::run(&method, &url, &headers, data.as_deref(), json_body, auth.as_deref(), show_headers, body_only)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
                 let mut p = s.splitn(2, ',');
