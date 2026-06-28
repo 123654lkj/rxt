@@ -99,6 +99,8 @@ enum Command {
         #[arg(short, long)] stat: bool,
         #[arg(long, help = "AI 模式: 输出结构化 JSON,包含每个变更的上下文和语义")]
         ai: bool,
+        #[arg(long, help = "side-by-side 双栏对比")] side_by_side: bool,
+        #[arg(long, help = "JSON 输出")] json: bool,
     },
     #[command(about = "依赖分析")]
     Dep {
@@ -256,6 +258,7 @@ mod hosts;
 mod remote;
 
 fn main() -> anyhow::Result<()> {
+    crate::common::setup_utf8_console();
     let cli = Cli::parse();
     
     // 如果有 --group,批量执行
@@ -379,8 +382,8 @@ fn main() -> anyhow::Result<()> {
         Command::Struct { path, functions, types, deep, extract, json } => {
             struct_mod::run(&path, functions, types, deep, extract.as_deref(), json)?;
         }
-        Command::Diff { first, second, context, stat, ai } => {
-            diff::run(&first, second.as_deref(), context, stat, ai)?;
+        Command::Diff { first, second, context, stat, ai, side_by_side, json } => {
+            diff::run(&first, second.as_deref(), context, stat, ai, side_by_side, json)?;
         }
         Command::Dep { target, tree, json, check } => dep::run(&target, tree, json, check)?,
         Command::Sed { path, pattern, replacement, preview, line, regex } => {

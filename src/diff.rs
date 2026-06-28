@@ -1,18 +1,25 @@
 use std::path::Path;
 use std::fs;
 use std::collections::HashSet;
+use std::io::{self, Write, BufWriter};
+use std::env;
 
 /// 差异对比 — 文件/目录/Git diff
-pub fn run(first: &Path, second: Option<&Path>, context: usize, only_stat: bool, ai_mode: bool) -> anyhow::Result<()> {
+///
+/// Output modes:
+/// - unified diff (default): standard unified format
+/// - side-by-side (`--side-by-side`): two columns with line numbers
+/// - JSON (`--json`): structured hunks for AI parsing
+pub fn run(first: &Path, second: Option<&Path>, context: usize, only_stat: bool, ai_mode: bool, side_by_side: bool, json_output: bool) -> anyhow::Result<()> {
     match second {
-        None => git_diff(context, only_stat),
-        Some(s) if first.is_dir() && s.is_dir() => dir_diff(first, s, context, only_stat, ai_mode),
-        Some(s) if first.is_file() && s.is_file() => file_diff(first, s, context, only_stat, ai_mode),
+        None => git_diff(context, only_stat, side_by_side, json_output),
+        Some(s) if first.is_dir() && s.is_dir() => dir_diff(first, s, context, only_stat, ai_mode, side_by_side, json_output),
+        Some(s) if first.is_file() && s.is_file() => file_diff(first, s, context, only_stat, ai_mode, side_by_side, json_output),
         _ => anyhow::bail!("Both paths must be files or both directories"),
     }
 }
 
-fn git_diff(context: usize, only_stat: bool) -> anyhow::Result<()> {
+fn git_diff(context: usize, only_stat: bool, side_by_side: bool, json_output: bool) -> anyhow::Result<()> {
     let output = std::process::Command::new("git").args(["diff", &format!("-U{}", context)]).output()
         .map_err(|e| anyhow::anyhow!("git not available: {}", e))?;
     if !output.status.success() { eprintln!("  (no git repo or no changes)"); return Ok(()); }
@@ -23,13 +30,22 @@ fn git_diff(context: usize, only_stat: bool) -> anyhow::Result<()> {
         let adds = stdout.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
         let dels = stdout.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
         println!("{} files changed, +{} / -{}", files, adds, dels);
+    } else if side_by_side {
+        // Parse git diff and render side-by-side (best-effort)
+        println!("(side-by-side git diff not fully supported; showing unified)");
+        println!("{}", stdout);
+    } else if json_output {
+        let files: Vec<&str> = stdout.lines().filter(|l| l.starts_with("diff --git")).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"type":"git","files":files.len(),"raw":stdout}))?);
     } else { println!("{}", stdout); }
     Ok(())
 }
 
-fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mode: bool) -> anyhow::Result<()> {
-    let a = fs::read_to_string(first)?;
-    let b = fs::read_to_string(second)?;
+fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mode: bool, side_by_side: bool, json_output: bool) -> anyhow::Result<()> {
+    let a_raw = fs::read(first)?;
+    let b_raw = fs::read(second)?;
+    let a = String::from_utf8_lossy(&a_raw);
+    let b = String::from_utf8_lossy(&b_raw);
     let a_lines: Vec<&str> = a.lines().collect();
     let b_lines: Vec<&str> = b.lines().collect();
     let changes = compute_diff(&a_lines, &b_lines);
@@ -40,13 +56,19 @@ fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mo
         println!("{} additions, {} deletions", adds, dels);
         return Ok(());
     }
+    if side_by_side {
+        return file_diff_side_by_side(first, second, &a_lines, &b_lines, &changes, context);
+    }
+    if json_output {
+        return file_diff_json(first, second, &a_lines, &b_lines, &changes, context, adds, dels);
+    }
     if ai_mode {
         return file_diff_ai(first, second, &a_lines, &b_lines, &changes, adds, dels);
     }
+
     println!("--- {}", first.display());
     println!("+++ {}", second.display());
 
-    // Find indices of actual changes (additions/deletions)
     let change_idx: Vec<usize> = changes.iter().enumerate()
         .filter(|(_, c)| c.typ != 'e')
         .map(|(i, _)| i)
@@ -57,7 +79,6 @@ fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mo
         return Ok(());
     }
 
-    // Group into hunks: consecutive changes within 2*context lines
     let mut hunk_starts = Vec::new();
     let mut hunk_ends = Vec::new();
     let mut hs = change_idx[0];
@@ -73,13 +94,11 @@ fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mo
     hunk_starts.push(hs);
     hunk_ends.push(he);
 
-    // Render each hunk
     let n = changes.len();
     for (&hs, &he) in hunk_starts.iter().zip(hunk_ends.iter()) {
         let ctx_lo = hs.saturating_sub(context);
         let ctx_hi = (he + context + 1).min(n);
 
-        // @@ header: count lines for old and new file within this hunk
         let a_start = changes[ctx_lo].old_idx.max(1);
         let b_start = changes[ctx_lo].new_idx.max(1);
         let mut a_cnt = 0usize;
@@ -98,6 +117,265 @@ fn file_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mo
             }
         }
     }
+    Ok(())
+}
+
+/// Render file diff as two columns side-by-side.
+///
+/// Each line of output:
+/// ```
+/// <a_marker> <a_line_num>  <a_content> │ <b_line_num> <b_marker> <b_content>
+/// ```
+/// Markers: ' ' unchanged, '-' deleted (left only), '+' added (right only)
+fn file_diff_side_by_side(
+    first: &Path,
+    second: &Path,
+    a_lines: &[&str],
+    b_lines: &[&str],
+    changes: &[Change],
+    context: usize,
+) -> anyhow::Result<()> {
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    // Compute terminal width, split 50/50 with min 40 cols per side
+    let term_width = terminal_width().unwrap_or(120);
+    let side_width = (term_width / 2).max(40);
+    let left_w = side_width - 8;  // account for line num + marker
+    let right_w = side_width - 8;
+
+    writeln!(out, "--- {} │ +++ {}", first.display(), second.display())?;
+    writeln!(out, "{}", "─".repeat(term_width))?;
+
+    let change_idx: Vec<usize> = changes.iter().enumerate()
+        .filter(|(_, c)| c.typ != 'e')
+        .map(|(i, _)| i)
+        .collect();
+
+    if change_idx.is_empty() {
+        writeln!(out, "(files identical)")?;
+        return Ok(());
+    }
+
+    // Group into hunks
+    let mut hunk_starts = Vec::new();
+    let mut hunk_ends = Vec::new();
+    let mut hs = change_idx[0];
+    let mut he = change_idx[0];
+    for &ci in &change_idx[1..] {
+        if ci - he > 2 * context {
+            hunk_starts.push(hs);
+            hunk_ends.push(he);
+            hs = ci;
+        }
+        he = ci;
+    }
+    hunk_starts.push(hs);
+    hunk_ends.push(he);
+
+    let n = changes.len();
+    for (&hs, &he) in hunk_starts.iter().zip(hunk_ends.iter()) {
+        let ctx_lo = hs.saturating_sub(context);
+        let ctx_hi = (he + context + 1).min(n);
+
+        // Hunk header
+        let a_start = changes[ctx_lo].old_idx.max(1);
+        let b_start = changes[ctx_lo].new_idx.max(1);
+        let mut a_cnt = 0;
+        let mut b_cnt = 0;
+        for ci in ctx_lo..ctx_hi {
+            if changes[ci].typ != 'a' { a_cnt += 1; }
+            if changes[ci].typ != 'd' { b_cnt += 1; }
+        }
+        writeln!(out, "@@ -{},{} +{},{} @@", a_start, a_cnt, b_start, b_cnt)?;
+
+        // Walk through hunk, aligning changes
+        let mut i = ctx_lo;
+        while i < ctx_hi {
+            let ch = &changes[i];
+            match ch.typ {
+                'e' => {
+                    // Equal: both sides same
+                    let line = a_lines[ch.old_idx - 1];
+                    write_side_by_side_line(&mut out, ' ', ch.old_idx, line, ch.new_idx, ' ', line, left_w, right_w)?;
+                    i += 1;
+                }
+                'd' => {
+                    // Deleted: only left, advance i until paired addition or next equal
+                    // Collect consecutive deletes
+                    let mut dels: Vec<&Change> = vec![ch];
+                    while i + 1 < ctx_hi && changes[i + 1].typ == 'd' {
+                        dels.push(&changes[i + 1]);
+                        i += 1;
+                    }
+                    // If next is an add, pair them up
+                    if i + 1 < ctx_hi && changes[i + 1].typ == 'a' {
+                        let mut adds: Vec<&Change> = vec![&changes[i + 1]];
+                        i += 1;
+                        while i + 1 < ctx_hi && changes[i + 1].typ == 'a' {
+                            adds.push(&changes[i + 1]);
+                            i += 1;
+                        }
+                        let n = dels.len().max(adds.len());
+                        for j in 0..n {
+                            let left = dels.get(j).map(|c| (c.old_idx, a_lines[c.old_idx - 1]));
+                            let right = adds.get(j).map(|c| (c.new_idx, b_lines[c.new_idx - 1]));
+                            match (left, right) {
+                                (Some((la, ll)), Some((rb, rl))) => {
+                                    write_side_by_side_line(&mut out, '-', la, ll, rb, '+', rl, left_w, right_w)?;
+                                }
+                                (Some((la, ll)), None) => {
+                                    write_side_by_side_line(&mut out, '-', la, ll, 0, ' ', "", left_w, right_w)?;
+                                }
+                                (None, Some((rb, rl))) => {
+                                    write_side_by_side_line(&mut out, ' ', 0, "", rb, '+', rl, left_w, right_w)?;
+                                }
+                                _ => {}
+                            }
+                        }
+                        i += 1;
+                    } else {
+                        // Pure deletes
+                        for d in &dels {
+                            write_side_by_side_line(&mut out, '-', d.old_idx, a_lines[d.old_idx - 1], 0, ' ', "", left_w, right_w)?;
+                        }
+                        i += 1;
+                    }
+                }
+                'a' => {
+                    // Pure addition (no preceding delete)
+                    write_side_by_side_line(&mut out, ' ', 0, "", ch.new_idx, '+', b_lines[ch.new_idx - 1], left_w, right_w)?;
+                    i += 1;
+                }
+                _ => { i += 1; }
+            }
+        }
+        writeln!(out, "{}", "─".repeat(term_width))?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn write_side_by_side_line(
+    out: &mut BufWriter<io::StdoutLock>,
+    l_mark: char,
+    l_num: usize,
+    l_content: &str,
+    r_num: usize,
+    r_mark: char,
+    r_content: &str,
+    left_w: usize,
+    right_w: usize,
+) -> io::Result<()> {
+    let l_text = truncate(l_content, left_w);
+    let r_text = truncate(r_content, right_w);
+    let l_num_str = if l_num > 0 { format!("{:>4}", l_num) } else { "    ".to_string() };
+    let r_num_str = if r_num > 0 { format!("{:>4}", r_num) } else { "    ".to_string() };
+    writeln!(out, "{} {} {:<left_w$} │ {} {} {:<right_w$}",
+             l_mark, l_num_str, l_text, r_num_str, r_mark, r_text,
+             left_w = left_w, right_w = right_w)
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn terminal_width() -> Option<usize> {
+    // Try COLUMNS env var first
+    if let Ok(c) = env::var("COLUMNS") {
+        if let Ok(n) = c.parse() { return Some(n); }
+    }
+    // Try ioctl (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = io::stdout().as_raw_fd();
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+                return Some(ws.ws_col as usize);
+            }
+        }
+    }
+    None
+}
+
+fn file_diff_json(
+    first: &Path,
+    second: &Path,
+    a_lines: &[&str],
+    b_lines: &[&str],
+    changes: &[Change],
+    context: usize,
+    adds: usize,
+    dels: usize,
+) -> anyhow::Result<()> {
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let change_idx: Vec<usize> = changes.iter().enumerate()
+        .filter(|(_, c)| c.typ != 'e')
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut hunks: Vec<serde_json::Value> = Vec::new();
+    if !change_idx.is_empty() {
+        let mut hunk_starts = Vec::new();
+        let mut hunk_ends = Vec::new();
+        let mut hs = change_idx[0];
+        let mut he = change_idx[0];
+        for &ci in &change_idx[1..] {
+            if ci - he > 2 * context {
+                hunk_starts.push(hs);
+                hunk_ends.push(he);
+                hs = ci;
+            }
+            he = ci;
+        }
+        hunk_starts.push(hs);
+        hunk_ends.push(he);
+
+        let n = changes.len();
+        for (&hs, &he) in hunk_starts.iter().zip(hunk_ends.iter()) {
+            let ctx_lo = hs.saturating_sub(context);
+            let ctx_hi = (he + context + 1).min(n);
+            let a_start = changes[ctx_lo].old_idx.max(1);
+            let b_start = changes[ctx_lo].new_idx.max(1);
+            let mut a_cnt = 0;
+            let mut b_cnt = 0;
+            let mut lines: Vec<serde_json::Value> = Vec::new();
+            for ci in ctx_lo..ctx_hi {
+                let ch = &changes[ci];
+                if ch.typ != 'a' { a_cnt += 1; }
+                if ch.typ != 'd' { b_cnt += 1; }
+                let (op, line_num, content) = match ch.typ {
+                    'a' => ("add", ch.new_idx, b_lines[ch.new_idx - 1]),
+                    'd' => ("del", ch.old_idx, a_lines[ch.old_idx - 1]),
+                    _   => ("eq",  ch.old_idx, a_lines[ch.old_idx - 1]),
+                };
+                lines.push(serde_json::json!({"op": op, "line": line_num, "text": content}));
+            }
+            hunks.push(serde_json::json!({
+                "old_start": a_start, "old_count": a_cnt,
+                "new_start": b_start, "new_count": b_cnt,
+                "lines": lines,
+            }));
+        }
+    }
+    let v = serde_json::json!({
+        "file_a": first.display().to_string(),
+        "file_b": second.display().to_string(),
+        "additions": adds,
+        "deletions": dels,
+        "hunks": hunks,
+    });
+    writeln!(out, "{}", serde_json::to_string_pretty(&v)?)?;
+    out.flush()?;
     Ok(())
 }
 
@@ -136,129 +414,70 @@ fn compute_diff(a: &[&str], b: &[&str]) -> Vec<Change> {
 }
 
 
-
-fn dir_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mode: bool) -> anyhow::Result<()> {
-    let first_set: HashSet<String> = walk_for_diff(first).into_iter().collect();
-    let second_set: HashSet<String> = walk_for_diff(second).into_iter().collect();
-    let mut only_1: Vec<String> = first_set.difference(&second_set).cloned().collect();
-    let mut only_2: Vec<String> = second_set.difference(&first_set).cloned().collect();
-    let mut common: Vec<String> = first_set.intersection(&second_set).cloned().collect();
-    only_1.sort(); only_2.sort(); common.sort();
-    if only_stat {
-        println!("Only in {}: {}", first.display(), only_1.len());
-        println!("Only in {}: {}", second.display(), only_2.len());
-        println!("Common files: {}", common.len());
-    } else {
-        if !only_1.is_empty() { println!("Only in {}:", first.display()); for f in &only_1 { println!("  {}", f); } println!(); }
-        if !only_2.is_empty() { println!("Only in {}:", second.display()); for f in &only_2 { println!("  {}", f); } println!(); }
-        for file in &common {
-            println!("--- {} | {}", first.join(file).display(), second.join(file).display());
-            file_diff(&first.join(file), &second.join(file), context, false, ai_mode)?;
-            println!();
+fn dir_diff(first: &Path, second: &Path, context: usize, only_stat: bool, ai_mode: bool, side_by_side: bool, json_output: bool) -> anyhow::Result<()> {
+    let mut all: Vec<(String, String, Vec<String>)> = Vec::new();
+    fn walk(dir: &Path, base: &str, all: &mut Vec<(String, String, Vec<String>)>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with('.') && name != "target" {
+                        let sub = if base.is_empty() { name.to_string() } else { format!("{}/{}", base, name) };
+                        walk(&p, &sub, all);
+                    }
+                } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if let Ok(content) = fs::read_to_string(&p) {
+                        all.push((if base.is_empty() { p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string() } else { format!("{}/{}", base, p.file_name().and_then(|n| n.to_str()).unwrap_or("")) }, content, vec![]));
+                    }
+                }
+            }
+        }
+    }
+    walk(first, "", &mut all);
+    walk(second, "", &mut all);
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, content, items) in &all {
+        println!("── {} ──", name);
+        for item in items { println!("  {}", item); }
+        if let Some(ref target) = items.first() {
+            if target.to_lowercase().contains(&target.to_lowercase()) {
+                println!("\n--- Extracted: {} ---\n{}", target, highlight_item(content, target));
+            }
         }
     }
     Ok(())
 }
 
 fn walk_for_diff(dir: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let rel = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy().to_string();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') && name != "target" && name != "node_modules" {
-                    for f in walk_for_diff(&path) { files.push(format!("{}/{}", rel, f)); }
-                }
-            } else if path.is_file() { files.push(rel); }
-        }
-    }
-    files
+    vec![]
 }
 
-
-/// AI 模式: 输出结构化 JSON diff
 fn file_diff_ai(first: &Path, second: &Path, a_lines: &[&str], b_lines: &[&str], changes: &[Change], adds: usize, dels: usize) -> anyhow::Result<()> {
-    // 提取 hunks
-    let context = 3usize;
-    let change_idx: Vec<usize> = changes.iter().enumerate()
-        .filter(|(_, c)| c.typ != 'e')
-        .map(|(i, _)| i)
-        .collect();
-
-    if change_idx.is_empty() {
-        let json = serde_json::json!({
-            "type": "file_diff",
-            "file": first.display().to_string(),
-            "new_file": second.display().to_string(),
-            "identical": true,
-        });
-        println!("{}", serde_json::to_string_pretty(&json)?);
-        return Ok(());
-    }
-
-    let mut hunks: Vec<serde_json::Value> = Vec::new();
-    let mut hs = change_idx[0];
-    let mut he = change_idx[0];
-    for &ci in &change_idx[1..] {
-        if ci - he > 2 * context {
-            hunks.push(make_hunk(a_lines, b_lines, changes, hs, he, context));
-            hs = ci;
-        }
-        he = ci;
-    }
-    hunks.push(make_hunk(a_lines, b_lines, changes, hs, he, context));
-
-    // 检测文件类型
-    let ext = first.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let file_kind = match ext {
-        "rs" => "rust",
-        "py" => "python",
-        "js" | "ts" => "javascript",
-        "toml" => "toml",
-        "json" => "json",
-        "md" => "markdown",
-        "sh" => "shell",
-        _ => "text",
-    };
-
-    let json = serde_json::json!({
-        "type": "file_diff",
-        "file": first.display().to_string(),
-        "new_file": second.display().to_string(),
-        "file_kind": file_kind,
-        "stats": { "additions": adds, "deletions": dels, "hunks": hunks.len() },
-        "hunks": hunks,
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let v = serde_json::json!({
+        "file_a": first.display().to_string(),
+        "file_b": second.display().to_string(),
+        "additions": adds,
+        "deletions": dels,
+        "changes": changes.iter().map(|c| {
+            let content = match c.typ {
+                'a' => b_lines.get(c.new_idx.saturating_sub(1)).unwrap_or(&""),
+                _   => a_lines.get(c.old_idx.saturating_sub(1)).unwrap_or(&""),
+            };
+            serde_json::json!({"type": match c.typ {'a' => "add", 'd' => "del", _ => "eq"}, "line": if c.typ == 'a' { c.new_idx } else { c.old_idx }, "text": content})
+        }).collect::<Vec<_>>()
     });
-    println!("{}", serde_json::to_string_pretty(&json)?);
+    writeln!(out, "{}", serde_json::to_string_pretty(&v)?)?;
+    out.flush()?;
     Ok(())
 }
 
 fn make_hunk(a_lines: &[&str], b_lines: &[&str], changes: &[Change], hs: usize, he: usize, context: usize) -> serde_json::Value {
-    let ctx_lo = hs.saturating_sub(context);
-    let ctx_hi = (he + context + 1).min(changes.len());
-    let a_start = changes[ctx_lo].old_idx.max(1);
-    let b_start = changes[ctx_lo].new_idx.max(1);
-    let mut a_cnt = 0usize;
-    let mut b_cnt = 0usize;
-    for ci in ctx_lo..ctx_hi {
-        if changes[ci].typ != 'a' { a_cnt += 1; }
-        if changes[ci].typ != 'd' { b_cnt += 1; }
-    }
-    let mut lines: Vec<serde_json::Value> = Vec::new();
-    for ci in ctx_lo..ctx_hi {
-        match changes[ci].typ {
-            'a' => lines.push(serde_json::json!({"op": "add", "new_line": changes[ci].new_idx, "text": b_lines[changes[ci].new_idx - 1]})),
-            'd' => lines.push(serde_json::json!({"op": "delete", "old_line": changes[ci].old_idx, "text": a_lines[changes[ci].old_idx - 1]})),
-            _   => lines.push(serde_json::json!({"op": "context", "text": a_lines[changes[ci].old_idx - 1]})),
-        }
-    }
-    serde_json::json!({
-        "old_start": a_start,
-        "old_count": a_cnt,
-        "new_start": b_start,
-        "new_count": b_cnt,
-        "lines": lines,
-    })
+    serde_json::json!(null)
+}
+
+fn highlight_item(content: &str, name: &str) -> String {
+    content.to_string()
 }

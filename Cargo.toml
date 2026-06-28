@@ -24,6 +24,7 @@ shellexpand = "3"
 ureq = { version = "3.3.0", features = ["json"] }
 rayon = "1"
 regex = "1"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader"] }
