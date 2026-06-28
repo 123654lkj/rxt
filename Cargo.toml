@@ -1,0 +1,26 @@
+[package]
+name = "rxt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+chrono = "0.4"
+hex = "0.4"
+toml = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+md-5 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+urlencoding = "2"
+notify = "7"
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+dirs = "5"
+shellexpand = "3"
+ureq = { version = "3.3.0", features = ["json"] }
+rayon = "1"
+regex = "1"
