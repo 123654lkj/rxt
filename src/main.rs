@@ -426,6 +426,16 @@ enum Command {
         #[arg(long, default_value_t = 500, help = "防抖毫秒")] debounce: u64,
         #[arg(long, help = "启动时先跑一次")] run_on_start: bool,
     },
+    #[command(about = "差分测试 — 代码进化验证(自举/重构/移植,对比双实现输出一致率)")]
+    Evolve {
+        #[arg(long, help = "参照实现(含{input}占位符)")] reference: String,
+        #[arg(long, help = "候选实现(含{input}占位符)")] candidate: String,
+        #[arg(long, help = "输入集(目录/glob/逗号列表)")] inputs: String,
+        #[arg(long, default_value = "exact", help = "对比模式: exact|json|exitcode")] mode: String,
+        #[arg(long, default_value_t = 15, help = "单个超时秒数")] timeout: u64,
+        #[arg(long, help = "首个失败即停,显示diff")] first_fail: bool,
+        #[arg(long)] json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -484,6 +494,7 @@ mod trash;
 mod recipe;
 mod bench;
 mod watch_run;
+mod evolve;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -776,6 +787,9 @@ fn main() -> anyhow::Result<()> {
         }
         Command::WatchRun { cmd, paths, ext, debounce, run_on_start } => {
             watch_run::run(&cmd, &paths, &ext, debounce, run_on_start)?;
+        }
+        Command::Evolve { reference, candidate, inputs, mode, timeout, first_fail, json } => {
+            evolve::run(&reference, &candidate, &inputs, &mode, timeout, first_fail, json)?;
         }
     }
     Ok(())

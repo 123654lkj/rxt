@@ -314,7 +314,15 @@ fn zero_parse(content: &str) -> Vec<CodeItem> {
     let lines = code_lines(content, "//", "/*", "*/");
     for (ln, line) in &lines {
         let t = line.trim();
-        if t.starts_with("fn ") {
+        // 计算缩进: 只收顶层(缩进0)的定义, 跳过函数体内的局部 let
+        let indent = line.len() - line.trim_start().len();
+        if indent > 0 { continue; }
+        // async fn 必须在 fn 之前判断
+        if t.starts_with("async fn ") {
+            let name = first_ident_after(t, "fn");
+            let sig = trim_sig(t);
+            items.push(CodeItem { kind: "async".to_string(), name, signature: sig, line: *ln });
+        } else if t.starts_with("fn ") {
             let name = first_ident_after(t, "fn");
             let sig = trim_sig(t);
             items.push(CodeItem { kind: "fn".to_string(), name, signature: sig, line: *ln });
@@ -326,13 +334,16 @@ fn zero_parse(content: &str) -> Vec<CodeItem> {
             let name = first_ident_after(t, "enum");
             let sig = trim_sig(t);
             items.push(CodeItem { kind: "enum".to_string(), name, signature: sig, line: *ln });
-        } else if t.starts_with("async fn ") {
-            let name = first_ident_after(t, "fn");
-            let sig = trim_sig(t);
-            items.push(CodeItem { kind: "async".to_string(), name, signature: sig, line: *ln });
         } else if t.starts_with("import ") {
             let name = first_ident_after(t, "import");
             items.push(CodeItem { kind: "import".to_string(), name, signature: t.to_string(), line: *ln });
+        } else if t.starts_with("let ") {
+            // 顶层全局变量(如 lexer.zero 的 let keywords = {...})
+            let name = first_ident_after(t, "let");
+            let sig = trim_sig(t);
+            if sig.contains('=') {
+                items.push(CodeItem { kind: "let".to_string(), name, signature: sig, line: *ln });
+            }
         }
     }
     items
