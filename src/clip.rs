@@ -105,31 +105,6 @@ fn write(data: &str) -> anyhow::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn read_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
-    if std::env::var("WAYLAND_DISPLAY").is_ok() && which("wl-paste") {
-        Ok(("wl-paste", vec![]))
-    } else if which("xclip") {
-        Ok(("xclip", vec!["-selection", "clipboard", "-o"]))
-    } else if which("xsel") {
-        Ok(("xsel", vec!["--clipboard", "--output"]))
-    } else {
-        anyhow::bail!("需要 xclip / xsel / wl-paste (任一)")
-    }
-}
-#[cfg(not(target_os = "windows"))]
-fn write_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
-    if std::env::var("WAYLAND_DISPLAY").is_ok() && which("wl-copy") {
-        Ok(("wl-copy", vec![]))
-    } else if which("xclip") {
-        Ok(("xclip", vec!["-selection", "clipboard"]))
-    } else if which("xsel") {
-        Ok(("xsel", vec!["--clipboard", "--input"]))
-    } else {
-        anyhow::bail!("需要 xclip / xsel / wl-copy (任一)")
-    }
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 fn read_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
     // X11: xclip; Wayland: wl-paste

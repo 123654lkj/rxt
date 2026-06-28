@@ -16,7 +16,8 @@ pub fn run(text: &str, _invert: bool, _compact: bool) -> anyhow::Result<()> {
     }
     // 用 qrcode.show 的 txt API(返回 ASCII art)
     let url = format!("https://qrcode.show/txt/{}", urlencoding::encode(text));
-    match ureq::get(&url).timeout(std::time::Duration::from_secs(10)).call() {
+    let agent = ureq::agent();
+    match agent.get(&url).call() {
         Ok(resp) => {
             let mut body = String::new();
             resp.into_body().into_reader().read_to_string(&mut body)?;
