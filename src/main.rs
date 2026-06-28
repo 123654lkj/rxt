@@ -295,7 +295,8 @@ mod unzip;
 mod ls;
 mod http; mod edit; mod hash;
 mod uuidgen; mod enc; mod watch;
-mod tail; mod timecmd; mod exec;
+mod tail;
+mod describe; mod timecmd; mod exec;
 mod sort; mod uniq; mod cut; mod count;
 mod build; mod check; mod size; mod clean;
 mod normalize;
@@ -307,6 +308,15 @@ mod remote;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
+
+    // Handle --describe before clap parses (since --describe needs to be a top-level flag,
+    // and adding it to Cli struct requires changes).
+    // Use raw arg parsing for this.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--describe") {
+        return describe::run();
+    }
+
     let cli = Cli::parse();
     
     // 如果有 --group,批量执行
