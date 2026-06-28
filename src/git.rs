@@ -47,6 +47,10 @@ pub fn run(subcmd: GitSubCmd, json_output: bool) -> anyhow::Result<()> {
         GitSubCmd::Add { paths } => add_cmd(&paths),
         GitSubCmd::Commit { message, all, dry_run } => commit_cmd(all, dry_run, message),
         GitSubCmd::Undo { soft } => undo(soft),
+        GitSubCmd::Push { remote, force, upstream, branch } => push(&remote, force, upstream, branch.as_deref()),
+        GitSubCmd::Pull { remote, rebase, branch } => pull(&remote, rebase, branch.as_deref()),
+        GitSubCmd::Fetch { remote, refspec } => fetch(&remote, refspec.as_deref()),
+        GitSubCmd::Remote { add, url, del, rename, to, set_url } => remote_cmd(add.as_deref(), url.as_deref(), del.as_deref(), rename.as_deref(), to.as_deref(), set_url.as_deref()),
     }
 }
 
@@ -77,6 +81,33 @@ pub enum GitSubCmd {
     Undo {
         #[arg(long, help = "soft 模式: 保留改动在 stage")]
         soft: bool,
+    },
+    #[command(about = "推送到远程 (默认 origin,可 --remote 指定)")]
+    Push {
+        #[arg(long, default_value = "origin")] remote: String,
+        #[arg(long, help = "强制推送")] force: bool,
+        #[arg(long, help = "推送并设置上游跟踪")] upstream: bool,
+        #[arg(help = "分支名(默认当前分支)")] branch: Option<String>,
+    },
+    #[command(about = "拉取远程 (默认 origin)")]
+    Pull {
+        #[arg(long, default_value = "origin")] remote: String,
+        #[arg(long, help = "用 rebase 而非 merge")] rebase: bool,
+        #[arg(help = "分支名(默认当前分支)")] branch: Option<String>,
+    },
+    #[command(about = "fetch 远程(不合并)")]
+    Fetch {
+        #[arg(long, default_value = "origin")] remote: String,
+        #[arg(help = "可选 refspec")] refspec: Option<String>,
+    },
+    #[command(about = "远程仓库管理 (list/add/remove/set-url)")]
+    Remote {
+        #[arg(long, help = "添加: --add 名称 URL")] add: Option<String>,
+        #[arg(long, help = "add 时的 URL")] url: Option<String>,
+        #[arg(long = "del", help = "删除远程")] del: Option<String>,
+        #[arg(long, help = "改名: --rename 旧 新")] rename: Option<String>,
+        #[arg(long, help = "rename 的新名字")] to: Option<String>,
+        #[arg(long = "set-url", help = "改 URL: --set-url 名称 --url URL")] set_url: Option<String>,
     },
 }
 
@@ -332,4 +363,88 @@ pub fn changed_files_since_head() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ===== push / pull / fetch / remote =====
+
+fn push(remote: &str, force: bool, upstream: bool, branch: Option<&str>) -> anyhow::Result<()> {
+    let br = branch.map(|b| b.to_string()).or_else(current_branch);
+    let mut args: Vec<String> = vec!["push".into()];
+    if force { args.push("--force".into()); }
+    if upstream { args.push("-u".into()); }
+    args.push(remote.into());
+    if let Some(b) = &br { args.push(b.clone()); }
+
+    // push 输出去 stderr,用 inherit 让用户直接看进度
+    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    if status.success() {
+        let target = match &br { Some(b) => format!("{} {}", remote, b), None => remote.into() };
+        println!("✓ 已推送到 {}", target);
+        Ok(())
+    } else {
+        anyhow::bail!("push 失败 (exit {})", status.code().unwrap_or(-1))
+    }
+}
+
+fn pull(remote: &str, rebase: bool, branch: Option<&str>) -> anyhow::Result<()> {
+    let br = branch.map(|b| b.to_string()).or_else(current_branch);
+    let mut args: Vec<String> = vec!["pull".into()];
+    if rebase { args.push("--rebase".into()); }
+    args.push(remote.into());
+    if let Some(b) = &br { args.push(b.clone()); }
+
+    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    if status.success() { println!("✓ pull 完成"); Ok(()) }
+    else { anyhow::bail!("pull 失败 (exit {})", status.code().unwrap_or(-1)) }
+}
+
+fn fetch(remote: &str, refspec: Option<&str>) -> anyhow::Result<()> {
+    let mut args: Vec<String> = vec!["fetch".into(), remote.into()];
+    if let Some(r) = refspec { args.push(r.into()); }
+    let status = Command::new("git").args(args.iter().map(|s| s.as_str()))
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    if status.success() { println!("✓ fetch 完成"); Ok(()) }
+    else { anyhow::bail!("fetch 失败 (exit {})", status.code().unwrap_or(-1)) }
+}
+
+fn remote_cmd(add: Option<&str>, url: Option<&str>, del: Option<&str>, rename: Option<&str>, to: Option<&str>, set_url: Option<&str>) -> anyhow::Result<()> {
+    if let Some(name) = add {
+        let u = url.ok_or_else(|| anyhow::anyhow!("--add 需要 --url"))?;
+        git(&["remote", "add", name, u])?;
+        println!("✓ 已添加远程 {} -> {}", name, u);
+        return Ok(());
+    }
+    if let Some(name) = del {
+        git(&["remote", "remove", name])?;
+        println!("✓ 已删除远程 {}", name);
+        return Ok(());
+    }
+    if let Some(old) = rename {
+        let new = to.ok_or_else(|| anyhow::anyhow!("--rename 需要 --to"))?;
+        git(&["remote", "rename", old, new])?;
+        println!("✓ 远程 {} -> {}", old, new);
+        return Ok(());
+    }
+    if let Some(name) = set_url {
+        let u = url.ok_or_else(|| anyhow::anyhow!("--set-url 需要 --url"))?;
+        git(&["remote", "set-url", name, u])?;
+        println!("✓ {} URL -> {}", name, u);
+        return Ok(());
+    }
+    // 无参数: list
+    let out = git(&["remote", "-v"])?;
+    if out.trim().is_empty() {
+        println!("(无远程仓库)");
+    } else {
+        print!("{}", out);
+    }
+    Ok(())
 }

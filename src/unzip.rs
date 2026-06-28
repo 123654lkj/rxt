@@ -137,9 +137,17 @@ fn extract_tar(archive: &Path, target: &Path, strip_prefix: Option<usize>) -> an
 }
 
 fn extract_tar_gz(archive: &Path, target: &Path, is_xz: bool, strip_prefix: Option<usize>) -> anyhow::Result<usize> {
+    #[cfg(not(feature = "xz"))]
+    if is_xz {
+        anyhow::bail!(".tar.xz/.txz 解压需要 `xz` feature(当前二进制未启用)");
+    }
     let file = File::open(archive)?;
-    let decoder: Box<dyn Read> = if is_xz {
-        Box::new(xz2::read::XzDecoder::new(BufReader::new(file)))
+    #[allow(unused_mut)]
+    let mut decoder: Box<dyn Read> = if is_xz {
+        #[cfg(feature = "xz")]
+        { Box::new(xz2::read::XzDecoder::new(BufReader::new(file))) }
+        #[cfg(not(feature = "xz"))]
+        { unreachable!() }
     } else {
         Box::new(flate2::read::GzDecoder::new(BufReader::new(file)))
     };
@@ -168,9 +176,17 @@ fn list_tar(archive: &Path, json: bool, strip_prefix: Option<usize>) -> anyhow::
 }
 
 fn list_tar_gz(archive: &Path, is_xz: bool, json: bool, strip_prefix: Option<usize>) -> anyhow::Result<()> {
+    #[cfg(not(feature = "xz"))]
+    if is_xz {
+        anyhow::bail!(".tar.xz/.txz 列表需要 `xz` feature(当前二进制未启用)");
+    }
     let file = File::open(archive)?;
-    let decoder: Box<dyn Read> = if is_xz {
-        Box::new(xz2::read::XzDecoder::new(BufReader::new(file)))
+    #[allow(unused_mut)]
+    let mut decoder: Box<dyn Read> = if is_xz {
+        #[cfg(feature = "xz")]
+        { Box::new(xz2::read::XzDecoder::new(BufReader::new(file))) }
+        #[cfg(not(feature = "xz"))]
+        { unreachable!() }
     } else {
         Box::new(flate2::read::GzDecoder::new(BufReader::new(file)))
     };

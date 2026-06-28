@@ -292,6 +292,47 @@ enum Command {
         #[arg(short, long)] path: Option<PathBuf>,
         #[arg(long)] json: bool,
     },
+    // ===== 系统命令族 (v0.4.0+) — 对标 PowerShell =====
+    #[command(about = "系统信息 - OS/CPU/内存/磁盘/网络 (all|os|cpu|mem|disk|net)")]
+    Sysinfo {
+        section: Option<String>,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "进程列表/查杀 (对标 Get/Stop-Process)")]
+    Ps {
+        #[arg(long, help = "按名称过滤(支持 * 通配)")] name: Option<String>,
+        #[arg(long = "kill", help = "终止进程(PID 或名称)")] kill: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 20, help = "显示前 N 条(0=全部)")] top: usize,
+        #[arg(long = "sort", default_value = "mem", help = "排序: mem|cpu|pid|name")] sort: String,
+        #[arg(long)] tree: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "Windows 服务管理 (对标 Get/Start/Stop-Service)")]
+    Service {
+        #[arg(long, help = "按名称过滤(支持 * 通配)")] name: Option<String>,
+        #[arg(long = "start")] start: Option<String>,
+        #[arg(long = "stop")] stop: Option<String>,
+        #[arg(long, help = "显示正在运行的")] running: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "注册表读写 (对标 Get/Set/Remove-ItemProperty)")]
+    Reg {
+        #[arg(long, help = "读: HKLM\\Software\\... 键路径")] get: Option<String>,
+        #[arg(long, help = "写: 路径 --name X --value Y")] set: Option<String>,
+        #[arg(long, help = "删除值")] delete: Option<String>,
+        #[arg(long = "name", help = "值名(默认 = 默认值)")] value_name: Option<String>,
+        #[arg(long, help = "写入的值")] value: Option<String>,
+        #[arg(long = "list", help = "列出键下所有值和子键")] list: Option<String>,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "网络 - TCP连接/路由/DNS (对标 Get-Net*/Resolve-DnsName)")]
+    Net {
+        #[arg(long, help = "TCP 连接(可加状态: listen/established)")] conn: Option<String>,
+        #[arg(long, help = "DNS 解析")] resolve: Option<String>,
+        #[arg(long, help = "路由表")] route: bool,
+        #[arg(long, help = "端口监听检查")] port: Option<String>,
+        #[arg(long)] json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -311,10 +352,10 @@ mod find;
 #[path = "struct.rs"]
 mod struct_mod;
 mod diff; mod dep; mod sed; mod grep; mod patch; mod tree;
-mod py; mod mem;  mod jq;
+mod py; #[cfg(feature="net")] mod mem; #[cfg(not(feature="net"))] #[path="mem_stub.rs"] mod mem;  mod jq;
 mod unzip;
 mod ls;
-mod http; mod edit; mod hash;
+#[cfg(feature="net")] mod http; #[cfg(not(feature="net"))] #[path="http_stub.rs"] mod http; mod edit; mod hash;
 mod uuidgen; mod enc; mod watch;
 mod tail;
 mod describe; mod timecmd; mod exec;
@@ -330,6 +371,12 @@ mod map;
 mod digest;
 mod refs;
 mod langs;
+// 系统命令族 (v0.4.0+) — 对标 PowerShell
+mod sysinfo;
+mod ps;
+mod service;
+mod reg;
+mod net;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -570,6 +617,21 @@ fn main() -> anyhow::Result<()> {
         Command::Refs { symbol, path, json } => {
             let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
             refs::run(&symbol, p, json)?;
+        }
+        Command::Sysinfo { section, json } => {
+            sysinfo::run(section.as_deref().unwrap_or("all"), json)?;
+        }
+        Command::Ps { name, kill, top, sort, tree, json } => {
+            ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json)?;
+        }
+        Command::Service { name, start, stop, running, json } => {
+            service::run(name.as_deref(), start.as_deref(), stop.as_deref(), running, json)?;
+        }
+        Command::Reg { get, set, delete, value_name, value, list, json } => {
+            reg::run(get.as_deref(), set.as_deref(), delete.as_deref(), value_name.as_deref(), value.as_deref(), list.as_deref(), json)?;
+        }
+        Command::Net { conn, resolve, route, port, json } => {
+            net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json)?;
         }
     }
     Ok(())

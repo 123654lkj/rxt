@@ -3,6 +3,15 @@ name = "rxt"
 version = "0.4.0"
 edition = "2021"
 
+[features]
+default = ["remote", "xz", "net"]
+# 远程 SSH/SFTP 能力(ssh2 → OpenSSL)。本地 Windows 无 OpenSSL 时关掉此 feature 即可编译。
+remote = ["ssh2", "shellexpand"]
+# .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
+xz = ["xz2"]
+# HTTP 客户端 + 星枢记忆(ureq → ring → C 编译器)。本地无 gcc 时关掉此 feature。
+net = ["ureq"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 encoding_rs = "0.8"
@@ -18,17 +27,18 @@ md-5 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 urlencoding = "2"
 notify = "7"
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+ssh2 = { version = "0.9", features = ["vendored-openssl"], optional = true }
 dirs = "5"
-shellexpand = "3"
-ureq = { version = "3.3.0", features = ["json"] }
+shellexpand = { version = "3", optional = true }
+ureq = { version = "3.3.0", features = ["json"], optional = true }
 rayon = "1"
 regex = "1"
 libc = "0.2"
 zip = { version = "2", default-features = false }
 tar = "0.4"
 flate2 = "1"
-xz2 = "0.1"
+xz2 = { version = "0.1", optional = true }
+sysinfo = "0.32"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader"] }
