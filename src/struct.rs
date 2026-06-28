@@ -75,7 +75,9 @@ fn walk_dir_deep(dir: &Path, base: &str, only_fn: bool, only_ty: bool, extract: 
                     let sub = if base.is_empty() { name.to_string() } else { format!("{}/{}", base, name) };
                     walk_dir_deep(&p, &sub, only_fn, only_ty, extract, out)?;
                 }
-            } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+            } else if p.extension().and_then(|e| e.to_str()).map(|x| {
+                crate::langparse::Lang::all_known_exts().contains(&x.to_lowercase().as_str())
+            }).unwrap_or(false) {
                 let items = extract_items_struct(&p, only_fn, only_ty)?;
                 push_items(out, &p, &items, extract);
             }
@@ -101,7 +103,22 @@ fn push_items(out: &mut Vec<serde_json::Value>, path: &Path, items: &[StructItem
 
 fn extract_items_struct(path: &Path, only_functions: bool, only_types: bool) -> anyhow::Result<Vec<StructItem>> {
     let content = fs::read_to_string(path)?;
-    Ok(extract_items_from_str(&content, only_functions, only_types))
+    // 按文件扩展名检测语言,走 langparse 多语言解析器
+    let lang = crate::langparse::detect_lang(path);
+    let items = if let Some(l) = lang {
+        let mut ci = crate::langparse::parse(&content, l);
+        ci = crate::langparse::filter(ci, only_functions, only_types);
+        ci.into_iter().map(|c| StructItem {
+            kind: c.kind,
+            name: c.name,
+            signature: c.signature,
+            line: c.line,
+        }).collect()
+    } else {
+        // 未知语言: 兜底用 Rust 规则(保持向后兼容)
+        extract_items_from_str(&content, only_functions, only_types)
+    };
+    Ok(items)
 }
 
 fn extract_items_from_str(content: &str, only_functions: bool, only_types: bool) -> Vec<StructItem> {
@@ -194,7 +211,11 @@ fn extract_name_from_sig(sig: &str, kw: &str) -> String {
 fn analyze_dir(dir: &Path, only_functions: bool, only_types: bool, extract: Option<&str>) -> anyhow::Result<()> {
     println!("Directory: {}", dir.display());
     if let Ok(entries) = fs::read_dir(dir) {
-        let mut files: Vec<_> = entries.flatten().filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("rs")).collect();
+        let known_exts = crate::langparse::Lang::all_known_exts();
+        let mut files: Vec<_> = entries.flatten().filter(|e| {
+            e.path().extension().and_then(|x| x.to_str())
+                .map(|x| known_exts.contains(&x.to_lowercase().as_str())).unwrap_or(false)
+        }).collect();
         files.sort_by_key(|e| e.file_name());
         for entry in &files {
             if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) { println!("\n── {} ──", name); }
@@ -216,7 +237,9 @@ fn analyze_dir_deep(dir: &Path, only_functions: bool, only_types: bool, extract:
                         let sub = if base.is_empty() { name.to_string() } else { format!("{}/{}", base, name) };
                         walk(&p, &sub, all, only_fn, only_ty, extract);
                     }
-                } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                } else if p.extension().and_then(|e| e.to_str()).map(|x| {
+                    crate::langparse::Lang::all_known_exts().contains(&x.to_lowercase().as_str())
+                }).unwrap_or(false) {
                     if let Ok(content) = fs::read_to_string(&p) {
                         let items = extract_items_text(&content, only_fn, only_ty);
                         if !items.is_empty() {
@@ -245,17 +268,28 @@ fn analyze_dir_deep(dir: &Path, only_functions: bool, only_types: bool, extract:
 
 fn analyze_file(path: &Path, only_functions: bool, only_types: bool, extract: Option<&str>) -> anyhow::Result<()> {
     let content = fs::read_to_string(path)?;
-    let items = extract_items_text(&content, only_functions, only_types);
+    // 走文件路径版(自动检测语言)
+    let items = extract_items_struct(path, only_functions, only_types)?;
+    let item_sigs: Vec<String> = items.iter().map(|i| i.signature.clone()).collect();
     println!("File: {}", path.display());
-    if items.is_empty() { println!("  (no items found)"); return Ok(()); }
+    if item_sigs.is_empty() { println!("  (no items found)"); return Ok(()); }
+    // 按 kind 分类(用解析结果的 kind,不再硬编码 Rust 关键字)
     let mut by_category: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for item in items {
-        let cat = if item.starts_with("fn ") { "Functions" } else if item.starts_with("struct ") { "Structs" }
-            else if item.starts_with("enum ") { "Enums" } else if item.starts_with("impl") { "Impls" }
-            else if item.starts_with("mod ") { "Modules" } else if item.starts_with("trait ") { "Traits" }
-            else if item.starts_with("type ") { "Type Aliases" } else if item.starts_with("pub use") || item.starts_with("use ") { "Imports" }
-            else if item.starts_with("const ") || item.starts_with("static ") { "Constants" } else { "Other" };
-        by_category.entry(cat.to_string()).or_default().push(item);
+    for it in &items {
+        let cat = match it.kind.as_str() {
+            "fn" | "function" | "method" | "async" | "getter" | "setter" => "Functions",
+            "struct" | "record" => "Structs",
+            "enum" => "Enums",
+            "impl" => "Impls",
+            "mod" | "module" => "Modules",
+            "trait" | "interface" => if it.kind == "trait" { "Traits" } else { "Interfaces" },
+            "type" => "Type Aliases",
+            "import" | "use" => "Imports",
+            "const" | "static" | "var" | "let" => "Constants",
+            "class" => "Classes",
+            _ => "Other",
+        };
+        by_category.entry(cat.to_string()).or_default().push(it.signature.clone());
     }
     for (cat, items) in &by_category {
         println!("  {} ({}):", cat, items.len());

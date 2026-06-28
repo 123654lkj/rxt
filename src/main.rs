@@ -464,6 +464,7 @@ mod map;
 mod digest;
 mod refs;
 mod langs;
+mod langparse;
 // 系统命令族 (v0.4.0+) — 对标 PowerShell
 mod sysinfo;
 mod ps;

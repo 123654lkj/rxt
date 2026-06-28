@@ -36,7 +36,15 @@ pub fn parser_for(path: &Path) -> Option<Box<dyn LanguageParser>> {
 
 /// 便捷封装: 读取文件 + 按 ext 分发解析. 不支持的文件返回 None.
 pub fn extract_symbols(path: &Path, content: &str) -> Option<Vec<Symbol>> {
-    parser_for(path).map(|p| p.parse(content))
+    // 统一走 langparse(全 9 语言, 更准确), 保留 Symbol 类型兼容
+    crate::langparse::detect_lang(path).map(|lang| {
+        crate::langparse::parse(content, lang).into_iter().map(|c| Symbol {
+            kind: c.kind,
+            name: c.name,
+            signature: c.signature,
+            line: c.line,
+        }).collect()
+    })
 }
 
 /// 该文件扩展名是否被支持
