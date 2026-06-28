@@ -145,3 +145,256 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     let mut i = 0; let mut j = 0;
     match_here(pb, &mut i, &nb, &mut j)
 }
+
+// ===== v0.4.0 神经层进化: 项目理解基建 =====
+
+/// 默认忽略的目录名(gitignore + 常见垃圾目录集中管理)
+const IGNORED_DIRS: &[&str] = &[
+    ".git", ".hg", ".svn", ".cvsignore",
+    "target", "node_modules", "vendor", "dist", "build",
+    ".venv", "venv", "env", "__pycache__", ".mypy_cache",
+    ".pytest_cache", ".next", ".nuxt", ".turbo", ".cache",
+    ".idea", ".vscode", "coverage", ".nyc_output",
+    "Pods", ".gradle", ".terraform",
+    ".rxt-cache",  // rxt 自己的缓存目录
+];
+
+/// gitignore-aware 干净遍历 — 集中忽略逻辑, 所有代码理解命令复用
+/// 
+/// - 永远跳过 IGNORED_DIRS 列出的目录
+/// - 永远跳过点开头文件(.git/.env 等)
+/// - 解析当前目录的 .gitignore(轻量: 简单 glob, 不递归嵌套 .gitignore)
+/// - exts: None=所有文件, Some=["rs","py"] 只返回这些扩展名
+/// - max_depth: None=无限, Some(n)=最多递归 n 层
+pub fn walk_clean(root: &Path, exts: Option<&[&str]>, max_depth: Option<usize>) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    // 收集 .gitignore 规则(根目录)
+    let ignore_patterns = load_gitignore(root);
+    walk_inner(root, exts, max_depth, 0, &ignore_patterns, &mut results);
+    results
+}
+
+fn load_gitignore(dir: &Path) -> Vec<String> {
+    let mut patterns = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(dir.join(".gitignore")) {
+        for line in content.lines() {
+            let l = line.trim();
+            if l.is_empty() || l.starts_with('#') { continue; }
+            patterns.push(l.to_string());
+        }
+    }
+    patterns
+}
+
+fn walk_inner(
+    dir: &Path,
+    exts: Option<&[&str]>,
+    max_depth: Option<usize>,
+    depth: usize,
+    ignore_patterns: &[String],
+    results: &mut Vec<PathBuf>,
+) {
+    if let Some(md) = max_depth {
+        if depth > md { return; }
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // 跳过点开头文件/目录
+        if name.starts_with('.') { continue; }
+        // 跳过 IGNORED_DIRS
+        if IGNORED_DIRS.contains(&name.as_str()) { continue; }
+        // 跳过 .gitignore 命中的(简单匹配: 精确名或后缀)
+        if ignore_patterns.iter().any(|p| {
+            matches_gitignore(p, &name)
+        }) {
+            continue;
+        }
+        let p = entry.path();
+        if p.is_dir() {
+            walk_inner(&p, exts, max_depth, depth + 1, ignore_patterns, results);
+        } else if p.is_file() {
+            // 扩展名过滤
+            if let Some(allowed) = exts {
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if !allowed.contains(&ext) { continue; }
+            }
+            results.push(p);
+        }
+    }
+}
+
+fn matches_gitignore(pattern: &str, name: &str) -> bool {
+    // 去 / 后缀(只取最后一段)
+    let pat = pattern.rsplit('/').next().unwrap_or(pattern);
+    let pat = pat.trim_end_matches('/');
+    if pat.is_empty() { return false; }
+    if pat == name { return true; }
+    // *.ext 后缀匹配
+    if let Some(suffix) = pat.strip_prefix("*.") {
+        return name.ends_with(&format!(".{}", suffix));
+    }
+    // foo* 前缀匹配
+    if let Some(prefix) = pat.strip_suffix('*') {
+        return name.starts_with(prefix);
+    }
+    // 用 glob_match 兜底
+    glob_match(pat, name)
+}
+
+/// 项目类型嗅探 — 检测 Cargo.toml/package.json/go.mod/pyproject.toml
+///
+/// 返回项目种类、名称、版本、清单文件路径
+pub struct ProjectKind {
+    pub kind: String,
+    pub name: String,
+    pub version: String,
+    pub manifest: PathBuf,
+}
+
+pub fn detect_kind(dir: &Path) -> Option<ProjectKind> {
+    // Rust
+    let cargo = dir.join("Cargo.toml");
+    if cargo.exists() {
+        if let Ok(content) = std::fs::read_to_string(&cargo) {
+            let name = extract_toml_field(&content, "name").unwrap_or_else(|| "unknown".into());
+            let version = extract_toml_field(&content, "version").unwrap_or_else(|| "0.0.0".into());
+            return Some(ProjectKind {
+                kind: "rust".into(),
+                name,
+                version,
+                manifest: cargo,
+            });
+        }
+    }
+    // Node.js
+    let pkg = dir.join("package.json");
+    if pkg.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pkg) {
+            let name = extract_json_field(&content, "name").unwrap_or_else(|| "unknown".into());
+            let version = extract_json_field(&content, "version").unwrap_or_else(|| "0.0.0".into());
+            return Some(ProjectKind {
+                kind: "node".into(),
+                name,
+                version,
+                manifest: pkg,
+            });
+        }
+    }
+    // Go
+    let gomod = dir.join("go.mod");
+    if gomod.exists() {
+        if let Ok(content) = std::fs::read_to_string(&gomod) {
+            let module = content.lines()
+                .find_map(|l| l.trim().strip_prefix("module ").map(|s| s.trim().to_string()))
+                .unwrap_or_else(|| "unknown".into());
+            return Some(ProjectKind {
+                kind: "go".into(),
+                name: module,
+                version: "0.0.0".into(),  // go.mod 无版本
+                manifest: gomod,
+            });
+        }
+    }
+    // Python
+    let pyproject = dir.join("pyproject.toml");
+    if pyproject.exists() {
+        if let Ok(content) = std::fs::read_to_string(&pyproject) {
+            let name = extract_toml_field(&content, "name").unwrap_or_else(|| "unknown".into());
+            let version = extract_toml_field(&content, "version").unwrap_or_else(|| "0.0.0".into());
+            return Some(ProjectKind {
+                kind: "python".into(),
+                name,
+                version,
+                manifest: pyproject,
+            });
+        }
+    }
+    let setup_py = dir.join("setup.py");
+    if setup_py.exists() {
+        return Some(ProjectKind {
+            kind: "python".into(),
+            name: "unknown".into(),
+            version: "0.0.0".into(),
+            manifest: setup_py,
+        });
+    }
+    None
+}
+
+/// 从 TOML 文本提取 `name = "..."` 字段(简单行匹配, 不用 toml crate)
+fn extract_toml_field(content: &str, field: &str) -> Option<String> {
+    let needle = format!("{} =", field);
+    for line in content.lines() {
+        let l = line.trim();
+        if l.starts_with(&needle) {
+            // name = "rxt"
+            let after = l[needle.len()..].trim();
+            let val = after.trim_start_matches('"').split('"').next().unwrap_or("");
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 从 JSON 文本提取 "key": "value" (简单字符串扫描, 不依赖 serde 解析整个文件)
+fn extract_json_field(content: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\"", field);
+    let idx = content.find(&needle)?;
+    let after = &content[idx + needle.len()..];
+    let colon = after.find(':')?;
+    let rest = &after[colon + 1..];
+    let quote = rest.find('"')?;
+    let val_start = quote + 1;
+    let val_rest = &rest[val_start..];
+    let end = val_rest.find('"')?;
+    Some(val_rest[..end].to_string())
+}
+
+/// token 估算 — chars/4 启发式(OpenAI 官方经验值, 零依赖)
+pub fn approx_tokens(text: &str) -> usize {
+    let chars = text.chars().count();
+    (chars + 3) / 4  // 向上取整, 避免短文本算成 0
+}
+
+/// token 预算截断 — 逐行累加 token, 超预算即停
+/// 
+/// 返回 (保留的行, 是否发生了截断)
+pub fn truncate_to_budget(lines: &[(usize, String)], budget: usize) -> (Vec<(usize, String)>, bool) {
+    if budget == 0 {
+        return (lines.to_vec(), false);
+    }
+    let mut kept = Vec::new();
+    let mut tokens = 0usize;
+    for (line_no, text) in lines {
+        let line_tokens = approx_tokens(text);
+        if tokens + line_tokens > budget {
+            // 这行加上就超了, 截断
+            return (kept, true);
+        }
+        tokens += line_tokens;
+        kept.push((*line_no, text.clone()));
+    }
+    (kept, false)
+}
+// ===== pub 桥接: 供 map/build_structure 复用忽略逻辑 =====
+
+/// pub 版: 加载 .gitignore 规则
+pub fn load_gitignore_pub(dir: &Path) -> Vec<String> {
+    load_gitignore(dir)
+}
+
+/// pub 版: 判断目录名是否在默认忽略列表
+pub fn is_ignored_dir(name: &str) -> bool {
+    IGNORED_DIRS.contains(&name)
+}
+
+/// pub 版: 判断文件名是否匹配某条 gitignore 规则
+pub fn matches_gitignore_pub(pattern: &str, name: &str) -> bool {
+    matches_gitignore(pattern, name)
+}

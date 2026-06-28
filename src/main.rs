@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "rxt", version, about = "Rust Codex Tools - AI's Cross-Platform IDE")]
-struct Cli {
+pub(crate) struct Cli {
     #[arg(long, global = true, help = "远程主机（从 ~/.rxt/hosts.toml 读取）")]
     host: Option<String>,
     #[arg(long, global = true, help = "远程主机组（批量执行）")]
@@ -21,7 +21,7 @@ enum Command {
         #[arg(long)] new: Option<PathBuf>,
         #[arg(long)] all: bool,
         #[arg(long)] preview: bool,
-        #[arg(num_args = 0..)] content: Vec<String>,
+        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
     },
     #[command(about = "读文件，自动检测编码/换行符/BOM，内部统一 UTF-8+LF")]
     Read {
@@ -31,12 +31,13 @@ enum Command {
         #[arg(short = 'H', long)] head: Option<usize>,
         #[arg(short = 'T', long)] tail: Option<usize>,
         #[arg(short = 'L', long)] lines: Option<String>,
+        #[arg(short, long, help = "token 预算, 超了自动截断")] budget: Option<usize>,
         #[arg(long)] json: bool,
     },
     #[command(about = "写文件，自动保持目标文件格式")]
     Write {
         path: PathBuf,
-        #[arg(num_args = 0..)] content: Vec<String>,
+        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
         #[arg(short, long)] append: bool,
         #[arg(long, help = "从本地文件读取内容 (改远程文件时不用 base64 编码)")] file: Option<PathBuf>,
         #[arg(long)] b64: bool,
@@ -201,7 +202,7 @@ enum Command {
         #[arg(long)] before: Option<String>,
         #[arg(long)] delete: Option<String>,
         #[arg(long)] replace: Option<String>,
-        #[arg(num_args = 0..)] content: Vec<String>,
+        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
         #[arg(long)] preview: bool,
         #[arg(long)] script: Option<PathBuf>,
         #[arg(short = 'L', long, help = "替换指定行范围 (如 10-20, 15)")]
@@ -271,6 +272,26 @@ enum Command {
         cmd: crate::git::GitSubCmd,
         #[arg(long)] json: bool,
     },
+    #[command(about = "v0.4.0 项目结构简报 + git HEAD 缓存引擎")]
+    Map {
+        dir: Option<PathBuf>,
+        #[arg(short, long, default_value_t = 3, help = "结构树深度")] depth: usize,
+        #[arg(long, help = "强制全量重算, 忽略缓存")] refresh: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "v0.4.0 文件骨架 — 函数体折叠, 省 token")]
+    Digest {
+        path: PathBuf,
+        #[arg(short, long, default_value_t = 8, help = "函数体超过 N 行才折叠")] threshold: usize,
+        #[arg(long, help = "token 预算")] budget: Option<usize>,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "v0.4.0 引用查找 — 谁调用谁, 语义分类 def/call")]
+    Refs {
+        symbol: String,
+        #[arg(short, long)] path: Option<PathBuf>,
+        #[arg(long)] json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -305,6 +326,10 @@ mod git;
 mod ctx;
 mod hosts;
 mod remote;
+mod map;
+mod digest;
+mod refs;
+mod langs;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -330,8 +355,8 @@ fn main() -> anyhow::Result<()> {
             let remote_channel = crate::remote::RemoteChannel::connect(member)?;
             
             match &cli.command {
-                Command::Read { path, encoding, number, head, tail, lines, json } => {
-                    read::run(path, encoding.clone(), *number, *head, *tail, lines.clone(), *json, Some(&remote_channel))?;
+                Command::Read { path, encoding, number, head, tail, lines, budget, json } => {
+                    read::run(path, encoding.clone(), *number, *head, *tail, lines.clone(), budget.clone(), *json, Some(&remote_channel))?;
                 }
                 Command::Stat { path, json } => {
                     stat::run(path, *json, Some(&remote_channel))?;
@@ -414,8 +439,8 @@ fn main() -> anyhow::Result<()> {
             } else { None };
             replace::run(&target, &old, nc.as_deref(), all, preview, remote_channel.as_ref())?;
         }
-        Command::Read { path, encoding, number, head, tail, lines, json } => {
-            read::run(&path, encoding, number, head, tail, lines, json, remote_channel.as_ref())?;
+        Command::Read { path, encoding, number, head, tail, lines, budget, json } => {
+            read::run(&path, encoding, number, head, tail, lines, budget, json, remote_channel.as_ref())?;
         }
         Command::Write { path, content, append, file, b64, preserve, from } => {
             if let Some(f) = from {
@@ -534,6 +559,17 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Git { cmd, json } => {
             git::run(cmd, json)?;
+        }
+        Command::Map { dir, depth, refresh, json } => {
+            let d = dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            map::run(d, json, refresh, depth)?;
+        }
+        Command::Digest { path, threshold, budget, json } => {
+            digest::run(&path, threshold, budget, json)?;
+        }
+        Command::Refs { symbol, path, json } => {
+            let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            refs::run(&symbol, p, json)?;
         }
     }
     Ok(())

@@ -12,3 +12,6 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# rxt 自身缓存
+.rxt-cache/

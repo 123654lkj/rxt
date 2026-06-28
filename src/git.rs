@@ -279,3 +279,57 @@ fn undo(soft: bool) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// ===== v0.4.0: 暴露 VCS 元信息给 map 等命令(库 API, 不打印) =====
+
+/// 当前 HEAD commit 完整 hash(失败返回 None, 不退出)
+pub fn current_head() -> Option<String> {
+    if !is_git_repo() { return None; }
+    git(&["rev-parse", "HEAD"]).ok().map(|s| s.trim().to_string())
+}
+
+/// 当前 HEAD 短 hash(前 7 位)
+pub fn current_head_short() -> Option<String> {
+    current_head().map(|h| h.chars().take(7).collect())
+}
+
+/// 当前分支名(分离 HEAD 时返回 None)
+pub fn current_branch() -> Option<String> {
+    if !is_git_repo() { return None; }
+    let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
+    let b = b.trim();
+    if b.is_empty() || b == "HEAD" {
+        None  // 分离 HEAD
+    } else {
+        Some(b.to_string())
+    }
+}
+
+/// 工作区是否有未提交改动
+pub fn is_dirty() -> bool {
+    if !is_git_repo() { return false; }
+    git(&["status", "--porcelain"])
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// 自上次 HEAD 以来变更的文件清单(用于 map 增量缓存)
+/// 返回相对路径列表; 失败或非 git 返回空
+pub fn changed_files_since_head() -> Vec<String> {
+    if !is_git_repo() { return vec![]; }
+    git(&["status", "--porcelain"])
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| {
+                    // porcelain 格式: "XY path" 或 "XY "path with space""
+                    let l = l.strip_prefix("\"\"").unwrap_or(l);
+                    if l.len() < 4 { return None; }
+                    // 跳过前 2 个状态字符 + 1 空格
+                    let path = l[3..].trim();
+                    let path = path.trim_matches('"');
+                    if path.is_empty() { None } else { Some(path.to_string()) }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
