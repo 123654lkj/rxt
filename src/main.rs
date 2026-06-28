@@ -157,7 +157,15 @@ enum Command {
         #[arg(short = 'r', long = "raw", help = "raw output (strings/numbers without quotes)")] raw: bool,
         #[arg(short = 's', long = "slurp", help = "slurp: read all inputs into array")] slurp: bool,
     },
-    #[command(about = "归档解压 — zip / tar / tar.gz / tgz / 3mf")]
+    #[command(about = "tail -f 替代 — 监控文件追加新行")]
+    Tail {
+        path: PathBuf,
+        #[arg(short = 'f', long = "filter", help = "正则过滤")] filter: Option<String>,
+        #[arg(short = 'n', long = "interval", default_value = "500", help = "轮询间隔 ms")] interval: u64,
+        #[arg(short = 'l', long = "lines", default_value = "10", help = "先打印最后 N 行")] lines: usize,
+        #[arg(long, help = "检查一次后退出")] once: bool,
+    },
+        #[command(about = "归档解压 — zip / tar / tar.gz / tgz / 3mf")]
     Unzip {
         archive: PathBuf,
         #[arg(short = 'o', long = "to")] target: Option<PathBuf>,
@@ -286,7 +294,8 @@ mod py; mod mem;  mod jq;
 mod unzip;
 mod ls;
 mod http; mod edit; mod hash;
-mod uuidgen; mod enc; mod watch; mod timecmd; mod exec;
+mod uuidgen; mod enc; mod watch;
+mod tail; mod timecmd; mod exec;
 mod sort; mod uniq; mod cut; mod count;
 mod build; mod check; mod size; mod clean;
 mod normalize;
@@ -476,6 +485,7 @@ fn main() -> anyhow::Result<()> {
             enc::run(&mode, is, true)?;
         }
         Command::Watch { patterns, cmd, path, debounce } => watch::run(&patterns, &cmd, path.as_deref(), debounce)?,
+        Command::Tail { path, filter, interval, lines, once } => tail::run(&path, filter.as_deref(), interval, lines, once)?,
         Command::Time { cmd } => timecmd::run(&cmd)?,
         Command::Exec { code, b64, lang, write, file, login, json } => {
             let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.unwrap_or_default() };
