@@ -392,6 +392,40 @@ enum Command {
         #[arg(long, help = "删除重复(保留每组第一个)")] delete: bool,
         #[arg(long)] json: bool,
     },
+    #[command(about = "安全删除 — 进回收站 + 恢复 (终结 rm 误删)")]
+    Trash {
+        paths: Vec<String>,
+        #[arg(long, help = "列出回收站")] list: bool,
+        #[arg(long, help = "恢复某项")] restore: Option<String>,
+        #[arg(long, help = "恢复到指定目录")] to: Option<String>,
+        #[arg(long, help = "清理 N 天前的")] clean: Option<u64>,
+        #[arg(long, help = "清空回收站")] purge: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "命令宏 — 重复操作变一个词 (add/list/run/show/rm)")]
+    Recipe {
+        action: String,
+        name: Option<String>,
+        content: Option<String>,
+        #[arg(num_args = 0.., allow_hyphen_values = true, help = "run 时的参数 $1 $2")] args: Vec<String>,
+        #[arg(long, help = "只看不执行")] dry_run: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "性能基准 — 跑 N 次取统计 + 对比")]
+    Bench {
+        cmds: Vec<String>,
+        #[arg(short = 'n', long, default_value_t = 10, help = "运行次数")] runs: usize,
+        #[arg(long, default_value_t = 1, help = "预热次数")] warmup: usize,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "文件变化自动重跑 (替代 nodemon/entr)")]
+    WatchRun {
+        cmd: String,
+        #[arg(num_args = 0.., help = "监控目录(默认当前)")] paths: Vec<String>,
+        #[arg(long, default_value = "", help = "扩展名过滤(逗号分隔 rs,py)")] ext: String,
+        #[arg(long, default_value_t = 500, help = "防抖毫秒")] debounce: u64,
+        #[arg(long, help = "启动时先跑一次")] run_on_start: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -445,6 +479,10 @@ mod clip;
 mod repeat;
 mod notify;
 mod dup;
+mod trash;
+mod recipe;
+mod bench;
+mod watch_run;
 
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
@@ -725,6 +763,18 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Dup { dir, min_size, ext, delete, json } => {
             dup::run(&dir, &min_size, ext.as_deref(), delete, json)?;
+        }
+        Command::Trash { paths, list, restore, to, clean, purge, json } => {
+            trash::run(&paths, list, restore.as_deref(), to.as_deref(), clean, purge, json)?;
+        }
+        Command::Recipe { action, name, content, args, dry_run, json } => {
+            recipe::run(&action, name.as_deref(), content.as_deref(), &args, dry_run, json)?;
+        }
+        Command::Bench { cmds, runs, warmup, json } => {
+            bench::run(&cmds, runs, warmup, json)?;
+        }
+        Command::WatchRun { cmd, paths, ext, debounce, run_on_start } => {
+            watch_run::run(&cmd, &paths, &ext, debounce, run_on_start)?;
         }
     }
     Ok(())
