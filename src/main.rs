@@ -157,6 +157,14 @@ enum Command {
         #[arg(short = 'r', long = "raw", help = "raw output (strings/numbers without quotes)")] raw: bool,
         #[arg(short = 's', long = "slurp", help = "slurp: read all inputs into array")] slurp: bool,
     },
+    #[command(about = "归档解压 — zip / tar / tar.gz / tgz / 3mf")]
+    Unzip {
+        archive: PathBuf,
+        #[arg(short = 'o', long = "to")] target: Option<PathBuf>,
+        #[arg(short = 'l', long = "list", help = "只列内容不解压")] list_only: bool,
+        #[arg(long, help = "JSON 输出")] json: bool,
+        #[arg(long, help = "去掉前 N 层目录前缀")] strip: Option<usize>,
+    },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
         path: PathBuf,
@@ -253,7 +261,8 @@ mod find;
 #[path = "struct.rs"]
 mod struct_mod;
 mod diff; mod dep; mod sed; mod grep; mod patch; mod tree;
-mod py; mod mem;  mod jq; mod edit; mod hash;
+mod py; mod mem;  mod jq;
+mod unzip; mod edit; mod hash;
 mod uuidgen; mod enc; mod watch; mod timecmd; mod exec;
 mod sort; mod uniq; mod cut; mod count;
 mod build; mod check; mod size; mod clean;
@@ -415,6 +424,7 @@ fn main() -> anyhow::Result<()> {
             tree::run(&path, depth, &ignores, dirs_only, json)?;
         }
         Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
+        Command::Unzip { archive, target, list_only, json, strip } => unzip::run(&archive, target.as_deref(), list_only, json, strip)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
                 let mut p = s.splitn(2, ',');

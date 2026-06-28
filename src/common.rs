@@ -38,18 +38,12 @@ pub fn setup_utf8_console() {
     {
         unsafe {
             use windows_sys::Win32::System::Console::{SetConsoleOutputCP, GetConsoleOutputCP};
-            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-            use windows_sys::Win32::Storage::FileSystem::{
-                GetFileType, WriteFile,
-            };
 
             // 65001 = UTF-8 code page
             let _ = SetConsoleOutputCP(65001);
 
-            // If writing to a pipe (not a console), don't try to write BOM
-            // Detect by checking if stdout is a char device
-            // This is a hint for downstream tools to not expect BOM
-            let _ = GetConsoleOutputCP();  // sanity check
+            // Sanity check — ensure API is reachable
+            let _ = GetConsoleOutputCP();
         }
     }
     // On non-Windows, no action needed
