@@ -20,6 +20,18 @@ mod imp {
     use crate::hosts::{HostConfig, HostsFile};
     use crate::signature::FileSignature;
 
+    /// 把路径转成远程 shell 安全的参数。
+    /// ~ 开头不加引号 (让 shell 展开 $HOME); 其它加双引号 (处理空格/特殊字符)。
+    /// v0.4.3: 修复 ~ 路径被引号包裹导致不展开的 bug。
+    fn shell_path(path: &Path) -> String {
+        let s = path.to_string_lossy();
+        if s.starts_with('~') {
+            s.into_owned()
+        } else {
+            format!("\"{}\"", s)
+        }
+    }
+
     /// russh client Handler (空实现, 接受所有主机密钥)
     struct ClientHandler;
 
@@ -87,39 +99,58 @@ mod imp {
 
         /// 远程执行命令, 返回合并的 stdout+stderr
         pub fn exec(&self, cmd: &str) -> anyhow::Result<String> {
+            let (stdout, stderr, exit) = self.exec_sep(cmd)?;
+            if exit != 0 {
+                anyhow::bail!("Remote command failed (exit {}): {}", exit, stderr.trim());
+            }
+            Ok(stdout)
+        }
+
+        /// 分离 stdout/stderr 执行。返回 (stdout, stderr, exit_code)。
+        /// v0.4.3: 修复 base64 解析被 stderr 污染的问题 —— 之前 exec 把 stderr 合并进 output,
+        /// 导致 read_file 的 base64 输出混入 locale 警告解码失败。
+        pub fn exec_sep(&self, cmd: &str) -> anyhow::Result<(String, String, i32)> {
             self.rt.block_on(async {
                 let mut channel = self.handle.channel_open_session().await?;
-                // russh 0.61: exec 签名 (want_reply, command)
                 channel.exec(true, cmd).await?;
 
-                let mut output = String::new();
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                let mut exit_code = 0i32;
                 loop {
                     let Some(msg) = channel.wait().await else { break; };
                     match msg {
-                        ChannelMsg::Data { ref data } | ChannelMsg::ExtendedData { ref data, .. } => {
-                            output.push_str(&String::from_utf8_lossy(data));
+                        ChannelMsg::Data { ref data } => {
+                            stdout.push_str(&String::from_utf8_lossy(data));
+                        }
+                        ChannelMsg::ExtendedData { ref data, .. } => {
+                            stderr.push_str(&String::from_utf8_lossy(data));
                         }
                         ChannelMsg::ExitStatus { exit_status } => {
-                            if exit_status != 0 {
-                                anyhow::bail!("Remote command failed (exit {}): {}", exit_status, output);
-                            }
+                            exit_code = exit_status as i32;
                         }
                         ChannelMsg::Eof | ChannelMsg::Close => break,
                         _ => {}
                     }
                 }
-                Ok(output)
+                Ok((stdout, stderr, exit_code))
             })
         }
 
         pub fn read_file(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
-            // v0.4.2: 不用 SFTP (russh-sftp subsystem 协商在 russh 0.61 下会超时),
-            // 改用 exec + base64 读文件。base64 保证二进制安全, 零转义问题。
-            let cmd = format!("base64 -w0 \"{}\" 2>/dev/null || base64 \"{}\"", path.display(), path.display());
-            let out = self.exec(&cmd)?;
+            // v0.4.3: 用 exec_sep 只取 stdout, 彻底隔离 stderr (修复 locale 警告污染 base64)。
+            // 用 cat | base64 而非 base64 -w0, 兼容 Linux/BSD/macOS; 解码前过滤所有空白。
+            let p = shell_path(path);
+            let cmd = format!("cat {} | base64", p);
+            let (stdout, _stderr, exit) = self.exec_sep(&cmd)?;
+            if exit != 0 {
+                anyhow::bail!("read_file failed (exit {}): {}", exit, _stderr.trim());
+            }
             use base64::Engine;
-            let cleaned = out.trim().replace(['\n', '\r'], "");
-            Ok(base64::engine::general_purpose::STANDARD.decode(&cleaned)?)
+            let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
+            base64::engine::general_purpose::STANDARD
+                .decode(&cleaned)
+                .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (raw len={}, first 60: {:?})", e, cleaned.len(), &cleaned[..cleaned.len().min(60)]))
         }
 
         pub fn read_file_utf8(&self, path: &Path) -> anyhow::Result<(String, FileSignature)> {
@@ -134,16 +165,38 @@ mod imp {
         }
 
         pub fn write_file_with_mode(&self, path: &Path, content: &[u8], mode: i32) -> anyhow::Result<()> {
-            // v0.4.2: 不用 SFTP, 改用 exec + base64 写文件。
-            // 内容 base64 编码后通过 base64 -d 解码写入, 二进制安全, 彻底避开 shell 引号转义。
+            // v0.4.3: exec+base64 写文件, 二进制安全, 避开 shell 引号转义。
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(content);
-            let parent_cmd = if let Some(parent) = path.parent() {
-                format!("mkdir -p \"{}\" && ", parent.display())
-            } else { String::new() };
-            // 用 printf '%s' <b64> | base64 -d > path  避免 base64 串过长被 argv 截断的风险
-            let cmd = format!("{}printf '%s' '{}' | base64 -d > \"{}\" && chmod {:o} \"{}\"",
-                parent_cmd, b64, path.display(), mode, path.display());
+            // 大于 ~1MB 走分块中转, 避免命令行 ARG_MAX 截断
+            if b64.len() > 1_000_000 {
+                return self.write_file_large(path, &b64, mode);
+            }
+            let p = shell_path(path);
+            let parent = shell_path(path.parent().unwrap_or(Path::new(".")));
+            let cmd = format!("mkdir -p {} && printf '%s' '{}' | base64 -d > {} && chmod {:o} {}",
+                parent, b64, p, mode, p);
+            let (_out, err, exit) = self.exec_sep(&cmd)?;
+            if exit != 0 {
+                anyhow::bail!("write_file failed (exit {}): {} | cmd: {}", exit, err.trim(), cmd);
+            }
+            Ok(())
+        }
+
+        /// 大文件: 分块通过 base64 文件中转写入, 突破 ARG_MAX 限制。
+        fn write_file_large(&self, path: &Path, b64: &str, mode: i32) -> anyhow::Result<()> {
+            let tmp = "/tmp/_rxt_write_large.b64";
+            // 清空目标临时文件
+            self.exec(&format!("rm -f {}", tmp))?;
+            // 分块 append (每块 500KB, 避免 ARG_MAX)
+            for chunk in b64.as_bytes().chunks(500_000) {
+                let chunk_str = std::str::from_utf8(chunk)?;
+                self.exec(&format!("printf '%s' '{}' >> {}", chunk_str, tmp))?;
+            }
+            // 解码写入目标 + 清理
+            let p = shell_path(path);
+            let cmd = format!("base64 -d {} > {} && chmod {:o} {} && rm -f {}",
+                tmp, p, mode, p, tmp);
             self.exec(&cmd)?;
             Ok(())
         }

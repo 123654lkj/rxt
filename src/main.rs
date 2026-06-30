@@ -542,10 +542,10 @@ fn main() -> anyhow::Result<()> {
                 }
                 Command::Write { path, content, append, file, b64, preserve, from: _ } => {
                     if let Some(f) = file {
-                        write::run_file(path, f, *append)?;
+                        write::run_file(path, f, *append, Some(&remote_channel))?;
                     } else if *b64 {
                         let j: Vec<String> = content.iter().cloned().collect();
-                        write::run_b64(path, &j.join(""), *append)?;
+                        write::run_b64(path, &j.join(""), *append, Some(&remote_channel))?;
                     } else {
                         let j: Vec<String> = content.iter().cloned().collect();
                         let joined = j.join("
@@ -623,10 +623,10 @@ fn main() -> anyhow::Result<()> {
                 let data = std::fs::read(&f)?;
                 write::run_bytes(&path, &data, append, preserve, remote_channel.as_ref())?;
             } else if let Some(f) = file {
-                write::run_file(&path, &f, append)?;
+                write::run_file(&path, &f, append, remote_channel.as_ref())?;
             } else if b64 {
                 let j = content.join("");
-                write::run_b64(&path, &j, append)?;
+                write::run_b64(&path, &j, append, remote_channel.as_ref())?;
             } else {
                 let j = content.join("\n");
                 write::run(&path, if content.is_empty() { None } else { Some(&j) }, append, preserve, remote_channel.as_ref())?;
