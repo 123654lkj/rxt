@@ -21,7 +21,7 @@ enum Command {
         #[arg(long)] new: Option<PathBuf>,
         #[arg(long)] all: bool,
         #[arg(long)] preview: bool,
-        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
+        #[arg(num_args = 0..)] content: Vec<String>,
     },
     #[command(about = "读文件，自动检测编码/换行符/BOM，内部统一 UTF-8+LF")]
     Read {
@@ -37,7 +37,7 @@ enum Command {
     #[command(about = "写文件，自动保持目标文件格式")]
     Write {
         path: PathBuf,
-        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
+        #[arg(num_args = 0..)] content: Vec<String>,
         #[arg(short, long)] append: bool,
         #[arg(long, help = "从本地文件读取内容 (改远程文件时不用 base64 编码)")] file: Option<PathBuf>,
         #[arg(long)] b64: bool,
@@ -202,7 +202,7 @@ enum Command {
         #[arg(long)] before: Option<String>,
         #[arg(long)] delete: Option<String>,
         #[arg(long)] replace: Option<String>,
-        #[arg(num_args = 0.., allow_hyphen_values = true)] content: Vec<String>,
+        #[arg(num_args = 0..)] content: Vec<String>,
         #[arg(long)] preview: bool,
         #[arg(long)] script: Option<PathBuf>,
         #[arg(short = 'L', long, help = "替换指定行范围 (如 10-20, 15)")]

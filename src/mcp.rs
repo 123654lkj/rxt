@@ -183,8 +183,18 @@ fn handle_tools_call(params: &Value) -> Value {
         // 先处理位置参数(按 describe 里的顺序)
         for pname in &positional {
             if let Some(val) = obj.get(pname) {
-                if let Some(s) = val.as_str() { pos_values.push(s.to_string()); }
-                else if let Some(n) = val.as_f64() { pos_values.push(if n.fract()==0.0 {format!("{}",n as i64)} else {format!("{}",n)}); }
+                if let Some(s) = val.as_str() {
+                    pos_values.push(s.to_string());
+                } else if let Some(n) = val.as_f64() {
+                    pos_values.push(if n.fract()==0.0 {format!("{}",n as i64)} else {format!("{}",n)});
+                } else if let Some(arr) = val.as_array() {
+                    // v0.4.3: 位置参数也可能是数组 (如 write 的 content: Vec<String>)
+                    // 之前漏了 array 分支, 导致 MCP 传 content:["x"] 时内容完全丢失。
+                    for a in arr {
+                        if let Some(s) = a.as_str() { pos_values.push(s.to_string()); }
+                        else if let Some(n) = a.as_f64() { pos_values.push(if n.fract()==0.0 {format!("{}",n as i64)} else {format!("{}",n)}); }
+                    }
+                }
             }
         }
         // 再处理 flag 参数
