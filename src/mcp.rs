@@ -128,15 +128,27 @@ fn build_tools_list() -> Value {
             let atype = arg.get("type").and_then(|t| t.as_str()).unwrap_or("String");
             let help = arg.get("help").and_then(|h| h.as_str()).unwrap_or("");
             let is_required = arg.get("required").and_then(|r| r.as_bool()).unwrap_or(false);
+            let long = arg.get("long").and_then(|l| l.as_str());
 
-            // MCP 参数名: 位置参数用原名, flag 加前缀避免冲突
+            // v0.4.1 修复 Bug2: MCP 参数名必须用真实的 CLI flag 名 (long, 已是 kebab-case),
+            // 而非 clap 字段名 (snake_case). 否则 schema 报 file_type/max_results,
+            // 但 CLI 认 --type/--max-results, handle_tools_call 拼 --file_type 直接报错。
+            // 位置参数 (无 long) 保持原名。host/group 是全局 flag, 单独暴露。
+            let param_name = if aname == "host" || aname == "group" {
+                aname.to_string()
+            } else if let Some(l) = long {
+                l.to_string()
+            } else {
+                aname.to_string()
+            };
+
             let schema_type = if atype.contains("bool") { "boolean" }
-                              else if atype.contains("usize") || atype.contains("u64") || atype.contains("f64") { "number" }
+                              else if atype.contains("number") { "number" }
                               else { "string" };
             let mut prop = json!({"type": schema_type, "description": help});
             // 数组类型(Vec)
             if atype.contains("Vec") { prop = json!({"type":"array","description":help}); }
-            properties.insert(aname.to_string(), prop);
+            properties.insert(param_name, prop);
             if is_required { required.push(aname.to_string()); }
         }
 

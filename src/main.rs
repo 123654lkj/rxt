@@ -231,6 +231,12 @@ enum Command {
         #[arg(long)] file: Option<PathBuf>,
         #[arg(long, help = "走 login shell, 加载完整 PATH/aliases")] login: bool,
         #[arg(long, help = "输出 JSON 包含 exit_code, stdout, stderr")] json: bool,
+        #[arg(long, help = "在指定 docker 容器内执行 (--host 远程时为远程容器, 否则本地容器)")]
+        container: Option<String>,
+        #[arg(long, help = "SQL 数据库名 (--lang sql 时配合 psql 使用, 默认 postgres)")]
+        db: Option<String>,
+        #[arg(long, help = "SQL 用户名 (--lang sql 时配合 psql 使用, 默认 postgres)")]
+        sql_user: Option<String>,
     },
     #[command(about = "行排序")]
     Sort { input: Option<String>, #[arg(short, long)] reverse: bool, #[arg(short = 'n', long)] numeric: bool, #[arg(short = 'k', long)] column: Option<usize>, #[arg(short = 't', long)] separator: Option<String>, #[arg(short = 'u', long)] unique: bool },
@@ -577,9 +583,9 @@ fn main() -> anyhow::Result<()> {
                         edit::run(path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, content, *preview, false, Some(&remote_channel))?;
                     }
                 }
-                Command::Exec { code, b64, lang, write, file, login: _, json } => {
+                Command::Exec { code, b64, lang, write, file, login: _, json, container, db, sql_user } => {
                     let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.clone().unwrap_or_default() };
-                    let ec = exec::run(&cs, *b64, lang.as_deref(), write.as_ref(), Some(&remote_channel), false, *json)?;
+                    let ec = exec::run(&cs, *b64, lang.as_deref(), write.as_ref(), Some(&remote_channel), false, *json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
                     if ec != 0 { std::process::exit(ec); }
                 }
                 Command::Ctx { path, max_lines, json } => {
@@ -692,9 +698,9 @@ fn main() -> anyhow::Result<()> {
         Command::Watch { patterns, cmd, path, debounce } => watch::run(&patterns, &cmd, path.as_deref(), debounce)?,
         Command::Tail { path, filter, interval, lines, once } => tail::run(&path, filter.as_deref(), interval, lines, once)?,
         Command::Time { cmd } => timecmd::run(&cmd)?,
-        Command::Exec { code, b64, lang, write, file, login, json } => {
+        Command::Exec { code, b64, lang, write, file, login, json, container, db, sql_user } => {
             let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.unwrap_or_default() };
-            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote_channel.as_ref(), login, json)?;
+            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote_channel.as_ref(), login, json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
         }
         Command::Sort { input, reverse, numeric, column, separator, unique } => {
             sort::run(input.as_deref(), reverse, numeric, column, separator, unique)?;
