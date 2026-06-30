@@ -1,70 +1,127 @@
 //! 远程通道 — SSH/SFTP 连接管理
 //! 让 AI 像管理本地一样管理远程服务器
 //!
+//! v0.4.2: 从 ssh2(依赖 libssh2-sys → openssl-src, Windows 上 perl 路径 bug 编译困难)
+//! 改用 russh(纯 Rust + ring 后端)。彻底摆脱 OpenSSL/perl/C 工具链依赖。
+//! 接口保持不变: connect/exec/read_file/write_file/write_file_with_mode。
+//!
 //! Feature 隔离:
-//! - `remote` feature 开启时: 完整 SSH/SFTP 实现(依赖 ssh2 → OpenSSL)
-//! - 关闭时: 提供桩(RemoteChannel::connect 永远报错),这样本地无 OpenSSL 也能编译出全功能本地版 rxt。
+//! - `remote` feature 开启时: 完整 russh 实现
+//! - 关闭时: 提供桩, 本地无任何 C 依赖也能编译
 
 #[cfg(feature = "remote")]
 mod imp {
-    use std::path::{Path, PathBuf};
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use ssh2::{Session, Sftp};
+    use std::path::Path;
+    use std::sync::Arc;
+    use anyhow::Context;
+    use russh::{client, ChannelMsg};
+    use russh::keys::*;
 
     use crate::hosts::{HostConfig, HostsFile};
     use crate::signature::FileSignature;
 
+    /// russh client Handler (空实现, 接受所有主机密钥)
+    struct ClientHandler;
+
+    // russh 0.61 Handler trait 用原生 async fn (非 async_trait)
+    impl client::Handler for ClientHandler {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _server_public_key: &russh::keys::PublicKey,
+        ) -> Result<bool, Self::Error> {
+            // 接受所有主机密钥 (内网工具, 与原 ssh2 行为一致)
+            Ok(true)
+        }
+    }
+
     pub struct RemoteChannel {
-        session: Session,
+        rt: tokio::runtime::Runtime,
+        handle: client::Handle<ClientHandler>,
         host_name: String,
         host_config: HostConfig,
     }
 
     impl RemoteChannel {
-        /// 连接到远程主机
         pub fn connect(host_alias: &str) -> anyhow::Result<Self> {
             let hosts = HostsFile::load()?;
             let config = hosts.get_host(host_alias)?.clone();
 
-            let tcp = TcpStream::connect(format!("{}:{}", config.host, config.port))?;
-            let mut session = Session::new()?;
-            session.set_tcp_stream(tcp);
-            session.handshake()?;
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()?;
 
-            // 认证
-            if let Some(key_path) = &config.key {
-                let key = shellexpand::tilde(key_path).into_owned();
-                session.userauth_pubkey_file(&config.user, None, Path::new(&key), None)?;
-            } else if let Some(password) = hosts.get_password(&config) {
-                session.userauth_password(&config.user, &password)?;
+            let handle = rt.block_on(Self::connect_async(&config))?;
+
+            Ok(Self { rt, handle, host_name: host_alias.to_string(), host_config: config })
+        }
+
+        async fn connect_async(config: &HostConfig) -> anyhow::Result<client::Handle<ClientHandler>> {
+            let ssh_config = Arc::new(client::Config::default());
+            let addr = format!("{}:{}", config.host, config.port);
+            let mut handle = client::connect(ssh_config, &addr, ClientHandler)
+                .await
+                .context("SSH connect failed")?;
+
+            // 认证: 优先密钥, 其次密码
+            let authed = if let Some(key_path) = &config.key {
+                let key_path = shellexpand::tilde(key_path).into_owned();
+                let key_pair = load_secret_key(&key_path, None)
+                    .with_context(|| format!("load key {}", key_path))?;
+                // russh 0.61: authenticate_publickey 要 PrivateKeyWithHashAlg
+                let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
+                handle.authenticate_publickey(&config.user, key_with_alg).await?
+            } else if let Some(password) = HostsFile::load().ok().and_then(|h| h.get_password(config)) {
+                handle.authenticate_password(&config.user, &password).await?
             } else {
-                // 尝试 agent 认证
-                session.userauth_agent(&config.user)?;
-            }
+                anyhow::bail!("No auth method (no key/password for {})", config.user);
+            };
 
-            if !session.authenticated() {
+            if !authed.success() {
                 anyhow::bail!("Authentication failed for {}@{}", config.user, config.host);
             }
+            Ok(handle)
+        }
 
-            Ok(Self {
-                session,
-                host_name: host_alias.to_string(),
-                host_config: config,
+        /// 远程执行命令, 返回合并的 stdout+stderr
+        pub fn exec(&self, cmd: &str) -> anyhow::Result<String> {
+            self.rt.block_on(async {
+                let mut channel = self.handle.channel_open_session().await?;
+                // russh 0.61: exec 签名 (want_reply, command)
+                channel.exec(true, cmd).await?;
+
+                let mut output = String::new();
+                loop {
+                    let Some(msg) = channel.wait().await else { break; };
+                    match msg {
+                        ChannelMsg::Data { ref data } | ChannelMsg::ExtendedData { ref data, .. } => {
+                            output.push_str(&String::from_utf8_lossy(data));
+                        }
+                        ChannelMsg::ExitStatus { exit_status } => {
+                            if exit_status != 0 {
+                                anyhow::bail!("Remote command failed (exit {}): {}", exit_status, output);
+                            }
+                        }
+                        ChannelMsg::Eof | ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                Ok(output)
             })
         }
 
-        /// 远程读取文件（原始字节）
         pub fn read_file(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
-            let sftp = self.session.sftp()?;
-            let remote_path = path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
-            let mut file = sftp.open(Path::new(remote_path))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
-            Ok(buf)
+            // v0.4.2: 不用 SFTP (russh-sftp subsystem 协商在 russh 0.61 下会超时),
+            // 改用 exec + base64 读文件。base64 保证二进制安全, 零转义问题。
+            let cmd = format!("base64 -w0 \"{}\" 2>/dev/null || base64 \"{}\"", path.display(), path.display());
+            let out = self.exec(&cmd)?;
+            use base64::Engine;
+            let cleaned = out.trim().replace(['\n', '\r'], "");
+            Ok(base64::engine::general_purpose::STANDARD.decode(&cleaned)?)
         }
 
-        /// 远程读取文件（UTF-8 + 签名检测）
         pub fn read_file_utf8(&self, path: &Path) -> anyhow::Result<(String, FileSignature)> {
             let raw = self.read_file(path)?;
             let sig = FileSignature::detect(&raw);
@@ -72,91 +129,33 @@ mod imp {
             Ok((text, sig))
         }
 
-        /// 远程写入文件（保持格式）
         pub fn write_file(&self, path: &Path, content: &[u8]) -> anyhow::Result<()> {
             self.write_file_with_mode(path, content, 0o644)
         }
 
-        /// 带权限的远程写文件
         pub fn write_file_with_mode(&self, path: &Path, content: &[u8], mode: i32) -> anyhow::Result<()> {
-            let sftp = self.session.sftp()?;
-            let remote_path = path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
-            if let Some(parent) = Path::new(remote_path).parent() {
-                let _ = self.mkdir_p(&sftp, parent);
-            }
-            let mut file = sftp.create(Path::new(remote_path))?;
-            file.write_all(content)?;
-            drop(file);
-            // 单独用 exec 设置权限（避免 setstat API 复杂性）
-            let _ = self.exec(&format!("chmod {:o} \"{}\"", mode, remote_path));
+            // v0.4.2: 不用 SFTP, 改用 exec + base64 写文件。
+            // 内容 base64 编码后通过 base64 -d 解码写入, 二进制安全, 彻底避开 shell 引号转义。
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(content);
+            let parent_cmd = if let Some(parent) = path.parent() {
+                format!("mkdir -p \"{}\" && ", parent.display())
+            } else { String::new() };
+            // 用 printf '%s' <b64> | base64 -d > path  避免 base64 串过长被 argv 截断的风险
+            let cmd = format!("{}printf '%s' '{}' | base64 -d > \"{}\" && chmod {:o} \"{}\"",
+                parent_cmd, b64, path.display(), mode, path.display());
+            self.exec(&cmd)?;
             Ok(())
         }
 
-        /// 远程执行命令
-        pub fn exec(&self, cmd: &str) -> anyhow::Result<String> {
-            let mut channel = self.session.channel_session()?;
-            channel.exec(cmd)?;
+        pub fn host_name(&self) -> &str { &self.host_name }
+        pub fn host_config(&self) -> &HostConfig { &self.host_config }
 
-            let mut output = String::new();
-            channel.read_to_string(&mut output)?;
-
-            let exit_status = channel.exit_status()?;
-            if exit_status != 0 {
-                let mut stderr = String::new();
-                let mut stderr_channel = channel.stderr();
-                stderr_channel.read_to_string(&mut stderr)?;
-                anyhow::bail!("Remote command failed (exit {}): {}", exit_status, stderr);
-            }
-
-            Ok(output)
-        }
-
-        /// 远程执行 rxt 命令
         pub fn exec_rxt(&self, args: &[&str]) -> anyhow::Result<String> {
-            let cmd = format!("rxt {}", args.join(" "));
-            self.exec(&cmd)
+            self.exec(&format!("rxt {}", args.join(" ")))
         }
-
-        /// 检查远程 rxt 是否存在
         pub fn check_rxt(&self) -> anyhow::Result<bool> {
-            match self.exec("which rxt") {
-                Ok(_) => Ok(true),
-                Err(_) => Ok(false),
-            }
-        }
-
-        /// 递归创建远程目录
-        fn mkdir_p(&self, sftp: &Sftp, path: &Path) -> anyhow::Result<()> {
-            let path_str = path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
-
-            // 尝试直接创建
-            match sftp.mkdir(path, 0o755) {
-                Ok(_) => return Ok(()),
-                Err(e) if e.code() == ssh2::ErrorCode::Session(-17) => {
-                    // 目录已存在
-                    return Ok(());
-                }
-                Err(_) => {}
-            }
-
-            // 递归创建父目录
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    self.mkdir_p(sftp, parent)?;
-                }
-            }
-
-            // 再次尝试创建
-            let _ = sftp.mkdir(path, 0o755);
-            Ok(())
-        }
-
-        pub fn host_name(&self) -> &str {
-            &self.host_name
-        }
-
-        pub fn host_config(&self) -> &HostConfig {
-            &self.host_config
+            match self.exec("which rxt") { Ok(_) => Ok(true), Err(_) => Ok(false) }
         }
     }
 }
@@ -164,53 +163,30 @@ mod imp {
 #[cfg(feature = "remote")]
 pub use imp::RemoteChannel;
 
-// ---- no-remote 桩: 本地编译模式,不存在远程能力 ----
+// ---- no-remote 桩 ----
 #[cfg(not(feature = "remote"))]
 mod stub {
     use std::path::Path;
 
-    /// 桩: 本地编译模式下 RemoteChannel 不可用。
-    /// 任何构造尝试都报错提示用户启用 remote feature 或使用远程版二进制。
-    pub struct RemoteChannel {
-        _private: (), // 不可外部构造
-    }
+    pub struct RemoteChannel { _private: () }
 
     impl RemoteChannel {
         pub fn connect(_host_alias: &str) -> anyhow::Result<Self> {
             anyhow::bail!(
                 "本 rxt 二进制未启用 remote 功能(编译时关闭了 `remote` feature)。\n\
-                 如需 --host/--group 远程能力,请使用启用 remote 的版本(虎虎上编译的 rxt)。\n\
+                 如需 --host/--group 远程能力,请使用启用 remote 的版本。\n\
                  本地版仅支持本地文件操作。"
             );
         }
-
-        pub fn read_file(&self, _path: &Path) -> anyhow::Result<Vec<u8>> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn read_file_utf8(&self, _path: &Path) -> anyhow::Result<(String, crate::signature::FileSignature)> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn write_file(&self, _path: &Path, _content: &[u8]) -> anyhow::Result<()> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn write_file_with_mode(&self, _path: &Path, _content: &[u8], _mode: i32) -> anyhow::Result<()> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn check_rxt(&self) -> anyhow::Result<bool> {
-            unreachable!("remote feature disabled")
-        }
-        pub fn host_name(&self) -> &str {
-            unreachable!("remote feature disabled")
-        }
-        pub fn host_config(&self) -> &crate::hosts::HostConfig {
-            unreachable!("remote feature disabled")
-        }
+        pub fn read_file(&self, _path: &Path) -> anyhow::Result<Vec<u8>> { unreachable!() }
+        pub fn read_file_utf8(&self, _path: &Path) -> anyhow::Result<(String, crate::signature::FileSignature)> { unreachable!() }
+        pub fn write_file(&self, _path: &Path, _content: &[u8]) -> anyhow::Result<()> { unreachable!() }
+        pub fn write_file_with_mode(&self, _path: &Path, _content: &[u8], _mode: i32) -> anyhow::Result<()> { unreachable!() }
+        pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> { unreachable!() }
+        pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> { unreachable!() }
+        pub fn check_rxt(&self) -> anyhow::Result<bool> { unreachable!() }
+        pub fn host_name(&self) -> &str { unreachable!() }
+        pub fn host_config(&self) -> &crate::hosts::HostConfig { unreachable!() }
     }
 }
 

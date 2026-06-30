@@ -5,8 +5,9 @@ edition = "2021"
 
 [features]
 default = ["remote", "xz", "net"]
-# 远程 SSH/SFTP 能力(ssh2 → OpenSSL)。本地 Windows 无 OpenSSL 时关掉此 feature 即可编译。
-remote = ["ssh2", "shellexpand"]
+# 远程 SSH/SFTP 能力。v0.4.2: 从 ssh2(→OpenSSL,Windows编译困难) 改用 russh(纯 Rust)。
+# 彻底摆脱 OpenSSL/perl 依赖, 本地无 C 工具链也能编译 remote feature。
+remote = ["russh", "tokio", "shellexpand"]
 # .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
 xz = ["xz2"]
 # HTTP 客户端 + 星枢记忆(ureq → ring → C 编译器)。本地无 gcc 时关掉此 feature。
@@ -27,7 +28,6 @@ md-5 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 urlencoding = "2"
 notify = "7"
-ssh2 = { version = "0.9", features = ["vendored-openssl"], optional = true }
 dirs = "5"
 shellexpand = { version = "3", optional = true }
 ureq = { version = "3.3.0", features = ["json"], optional = true }
@@ -39,6 +39,9 @@ tar = "0.4"
 flate2 = "1"
 xz2 = { version = "0.1", optional = true }
 sysinfo = "0.32"
+# v0.4.2: russh 纯 Rust SSH 实现, 替代 ssh2。文件传输用 exec+base64 (避开 SFTP subsystem 兼容问题)
+russh = { version = "0.61.2", default-features = false, features = ["rsa", "flate2", "ring"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader"] }
