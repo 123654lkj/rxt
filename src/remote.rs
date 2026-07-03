@@ -17,7 +17,7 @@ mod imp {
     use russh::{client, ChannelMsg};
     use russh::keys::*;
 
-    use crate::hosts::{HostConfig, HostsFile};
+    use crate::hosts::{HostConfig, HostsFile, RemoteOs};
     use crate::signature::FileSignature;
 
     /// 把路径转成远程 shell 安全的参数。
@@ -30,6 +30,12 @@ mod imp {
         } else {
             format!("\"{}\"", s)
         }
+    }
+
+    /// Windows pwsh path escape
+    fn shell_path_win(path: &Path) -> String {
+        let s = path.to_string_lossy().replace('/', "\\");
+        format!("'{}'", s.replace("'", "''"))
     }
 
     /// russh client Handler (空实现, 接受所有主机密钥)
@@ -53,6 +59,7 @@ mod imp {
         handle: client::Handle<ClientHandler>,
         host_name: String,
         host_config: HostConfig,
+        os: RemoteOs,
     }
 
     impl RemoteChannel {
@@ -67,7 +74,9 @@ mod imp {
 
             let handle = rt.block_on(Self::connect_async(&config))?;
 
-            Ok(Self { rt, handle, host_name: host_alias.to_string(), host_config: config })
+            let mut ch = Self { rt, handle, host_name: host_alias.to_string(), host_config: config.clone(), os: RemoteOs::Linux };
+            ch.os = config.os.unwrap_or_else(|| ch.detect_os().unwrap_or(RemoteOs::Linux));
+            Ok(ch)
         }
 
         async fn connect_async(config: &HostConfig) -> anyhow::Result<client::Handle<ClientHandler>> {
@@ -98,6 +107,17 @@ mod imp {
         }
 
         /// 远程执行命令, 返回合并的 stdout+stderr
+        /// Detect remote OS
+        fn detect_os(&self) -> anyhow::Result<RemoteOs> {
+            if let Ok(out) = self.exec("uname -s 2>/dev/null") {
+                if out.to_lowercase().contains("linux") { return Ok(RemoteOs::Linux); }
+            }
+            if let Ok(out) = self.exec("pwsh -NoProfile -Command \"if(\\){\\\"WIN\\\"}\"") {
+                if out.trim() == "WIN" { return Ok(RemoteOs::Windows); }
+            }
+            Ok(RemoteOs::Linux)
+        }
+
         pub fn exec(&self, cmd: &str) -> anyhow::Result<String> {
             let (stdout, stderr, exit) = self.exec_sep(cmd)?;
             if exit != 0 {
@@ -138,19 +158,27 @@ mod imp {
         }
 
         pub fn read_file(&self, path: &Path) -> anyhow::Result<Vec<u8>> {
-            // v0.4.3: 用 exec_sep 只取 stdout, 彻底隔离 stderr (修复 locale 警告污染 base64)。
-            // 用 cat | base64 而非 base64 -w0, 兼容 Linux/BSD/macOS; 解码前过滤所有空白。
-            let p = shell_path(path);
-            let cmd = format!("cat {} | base64", p);
-            let (stdout, _stderr, exit) = self.exec_sep(&cmd)?;
-            if exit != 0 {
-                anyhow::bail!("read_file failed (exit {}): {}", exit, _stderr.trim());
-            }
             use base64::Engine;
-            let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
-            base64::engine::general_purpose::STANDARD
-                .decode(&cleaned)
-                .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (raw len={}, first 60: {:?})", e, cleaned.len(), &cleaned[..cleaned.len().min(60)]))
+            match self.os {
+                RemoteOs::Windows => {
+                    let p = shell_path_win(path);
+                    let cmd = format!("pwsh -NoProfile -Command \"[Convert]::ToBase64String([IO.File]::ReadAllBytes({}))\"", p);
+                    let (stdout, stderr, exit) = self.exec_sep(&cmd)?;
+                    if exit != 0 { anyhow::bail!("read_file (win) exit {}: {}", exit, stderr.trim()); }
+                    let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
+                    base64::engine::general_purpose::STANDARD.decode(&cleaned)
+                        .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len()))
+                }
+                _ => {
+                    let p = shell_path(path);
+                    let cmd = format!("cat {} | base64", p);
+                    let (stdout, stderr, exit) = self.exec_sep(&cmd)?;
+                    if exit != 0 { anyhow::bail!("read_file exit {}: {}", exit, stderr.trim()); }
+                    let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
+                    base64::engine::general_purpose::STANDARD.decode(&cleaned)
+                        .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len()))
+                }
+            }
         }
 
         pub fn read_file_utf8(&self, path: &Path) -> anyhow::Result<(String, FileSignature)> {
@@ -165,22 +193,40 @@ mod imp {
         }
 
         pub fn write_file_with_mode(&self, path: &Path, content: &[u8], mode: i32) -> anyhow::Result<()> {
-            // v0.4.3: exec+base64 写文件, 二进制安全, 避开 shell 引号转义。
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(content);
-            // 大于 ~1MB 走分块中转, 避免命令行 ARG_MAX 截断
             if b64.len() > 1_000_000 {
                 return self.write_file_large(path, &b64, mode);
             }
-            let p = shell_path(path);
-            let parent = shell_path(path.parent().unwrap_or(Path::new(".")));
-            let cmd = format!("mkdir -p {} && printf '%s' '{}' | base64 -d > {} && chmod {:o} {}",
-                parent, b64, p, mode, p);
-            let (_out, err, exit) = self.exec_sep(&cmd)?;
-            if exit != 0 {
-                anyhow::bail!("write_file failed (exit {}): {} | cmd: {}", exit, err.trim(), cmd);
+            match self.os {
+                RemoteOs::Windows => {
+                    let p = shell_path_win(path);
+                    // Extract parent manually since Linux Path doesn't understand Windows paths
+                    let path_str = path.to_string_lossy().replace('\\', "/");
+                    let parent_str = if let Some(idx) = path_str.rfind('/') {
+                        &path_str[..idx]
+                    } else {
+                        "."
+                    };
+                    let parent = shell_path_win(std::path::Path::new(parent_str));
+                    let cmd = format!(
+                        "pwsh -NoProfile -Command \"[IO.Directory]::CreateDirectory({}); [IO.File]::WriteAllBytes({}, [Convert]::FromBase64String(\'{}\'))\"",
+                        parent, p, b64
+                    );
+                    let (_out, err, exit) = self.exec_sep(&cmd)?;
+                    if exit != 0 { anyhow::bail!("write_file (win) exit {}: {}", exit, err.trim()); }
+                    Ok(())
+                }
+                _ => {
+                    let p = shell_path(path);
+                    let parent = shell_path(path.parent().unwrap_or(Path::new(".")));
+                    let cmd = format!("mkdir -p {} && printf '%s' '{}' | base64 -d > {} && chmod {:o} {}",
+                        parent, b64, p, mode, p);
+                    let (_out, err, exit) = self.exec_sep(&cmd)?;
+                    if exit != 0 { anyhow::bail!("write_file exit {}: {}", exit, err.trim()); }
+                    Ok(())
+                }
             }
-            Ok(())
         }
 
         /// 大文件: 分块通过 base64 文件中转写入, 突破 ARG_MAX 限制。
@@ -203,6 +249,7 @@ mod imp {
 
         pub fn host_name(&self) -> &str { &self.host_name }
         pub fn host_config(&self) -> &HostConfig { &self.host_config }
+        pub fn remote_os(&self) -> RemoteOs { self.os }
 
         pub fn exec_rxt(&self, args: &[&str]) -> anyhow::Result<String> {
             self.exec(&format!("rxt {}", args.join(" ")))
@@ -240,6 +287,7 @@ mod stub {
         pub fn check_rxt(&self) -> anyhow::Result<bool> { unreachable!() }
         pub fn host_name(&self) -> &str { unreachable!() }
         pub fn host_config(&self) -> &crate::hosts::HostConfig { unreachable!() }
+        pub fn remote_os(&self) -> crate::hosts::RemoteOs { unreachable!() }
     }
 }
 

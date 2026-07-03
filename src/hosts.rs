@@ -4,6 +4,26 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteOs {
+    Linux,
+    Windows,
+}
+
+impl Default for RemoteOs {
+    fn default() -> Self { RemoteOs::Linux }
+}
+
+impl std::fmt::Display for RemoteOs {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            RemoteOs::Linux => write!(f, "linux"),
+            RemoteOs::Windows => write!(f, "windows"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HostConfig {
     pub host: String,
@@ -16,6 +36,8 @@ pub struct HostConfig {
     pub port: u16,
     #[serde(default)]
     pub password_env: Option<String>,
+    #[serde(default)]
+    pub os: Option<RemoteOs>,  // 可选，避免每次检测
 }
 
 fn default_port() -> u16 { 22 }

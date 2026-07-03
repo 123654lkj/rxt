@@ -18,6 +18,7 @@ struct Runner {
 const RUNNER_SH: Runner = Runner { suffix: "sh", program: "sh", base_args: &[], use_stdin: true };
 const RUNNER_PY: Runner = Runner { suffix: "py", program: "python3", base_args: &["-c"], use_stdin: true };
 const RUNNER_PS1: Runner = Runner { suffix: "ps1", program: "powershell", base_args: &["-NoProfile", "-Command"], use_stdin: true };
+const RUNNER_PWSH7: Runner = Runner { suffix: "ps1", program: "pwsh", base_args: &["-NoProfile", "-Command"], use_stdin: true };
 const RUNNER_BAT: Runner = Runner { suffix: "bat", program: "cmd", base_args: &["/C"], use_stdin: false };
 
 /// 智能检测:默认是 sh
@@ -55,7 +56,8 @@ fn runner_for(lang: &str) -> &'static Runner {
     match lang {
         "sh" | "bash" | "zsh" => &RUNNER_SH,
         "py" | "python" => &RUNNER_PY,
-        "ps1" | "powershell" | "pwsh" => &RUNNER_PS1,
+        "ps1" | "powershell" => &RUNNER_PS1,
+        "pwsh" | "pwsh7" => &RUNNER_PWSH7,
         "bat" | "cmd" => &RUNNER_BAT,
         _ => &RUNNER_SH,
     }
@@ -317,19 +319,31 @@ fn run_local(text: &str, runner: &Runner, login: bool, json_output: bool) -> any
 
 fn run_remote(text: &str, lang: &str, login: bool, json_output: bool, remote: &crate::remote::RemoteChannel) -> anyhow::Result<i32> {
     let runner = runner_for(lang);
-    let tmp_path = format!("/tmp/_rxt_exec_remote.{}", runner.suffix);
-    let tmp_file = Path::new(&tmp_path);
+    let os = remote.remote_os();
+    
+    let (tmp_path, exec_cmd, rm_cmd) = match os {
+        crate::hosts::RemoteOs::Windows => {
+            let tmp = format!("C:\\Users\\{}\\AppData\\Local\\Temp\\_rxt_exec.ps1", remote.host_config().user);
+            let exec = format!("pwsh -NoProfile -File \"{}\"", tmp);
+            let rm = format!("pwsh -NoProfile -Command \"Remove-Item \'{}\'  -Force -ErrorAction SilentlyContinue\"", tmp);
+            (tmp, exec, rm)
+        }
+        _ => {
+            let tmp = format!("/tmp/_rxt_exec.{}", runner.suffix);
+            let login_prefix = if login { "bash -lc " } else { "" };
+            let exec = format!("{} {} {}", login_prefix.trim_end(), runner.program, tmp);
+            let rm = format!("rm -f {}", tmp);
+            (tmp, exec, rm)
+        }
+    };
 
+    let tmp_file = Path::new(&tmp_path);
     remote.write_file_with_mode(tmp_file, text.as_bytes(), 0o755)?;
 
-    // 远端:临时文件是脚本,直接 program tmp_path
-    let login_prefix = if login { "bash -lc " } else { "" };
-    let cmd = format!("{} {} {}", login_prefix.trim_end(), runner.program, tmp_path);
-
-    let output = remote.exec(&cmd)?;
+    let output = remote.exec(&exec_cmd)?;
     print!("{}", output);
 
-    let _ = remote.exec(&format!("rm -f {}", tmp_path));
+    let _ = remote.exec(&rm_cmd);
     if json_output {
         let json = serde_json::json!({
             "exit_code": 0,
