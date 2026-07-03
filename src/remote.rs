@@ -109,13 +109,32 @@ mod imp {
         /// 远程执行命令, 返回合并的 stdout+stderr
         /// Detect remote OS
         fn detect_os(&self) -> anyhow::Result<RemoteOs> {
+            // 先试 Linux: uname -s 返回 "Linux"
             if let Ok(out) = self.exec("uname -s 2>/dev/null") {
                 if out.to_lowercase().contains("linux") { return Ok(RemoteOs::Linux); }
             }
-            if let Ok(out) = self.exec("pwsh -NoProfile -Command \"if(\\){\\\"WIN\\\"}\"") {
+            // 再试 Windows: 执行简单命令，Windows 的 cmd/PowerShell 都能 echo
+            if let Ok(out) = self.exec("echo WIN") {
                 if out.trim() == "WIN" { return Ok(RemoteOs::Windows); }
             }
             Ok(RemoteOs::Linux)
+        }
+
+        /// 解码远端输出: Windows 尝试 GBK 回退, Linux 用 UTF-8
+        fn decode_remote(&self, data: &[u8]) -> String {
+            match self.os {
+                RemoteOs::Windows => {
+                    // 先试 UTF-8, 如果有替换字符(说明不是有效UTF-8), 回退到 GBK
+                    let utf8 = String::from_utf8_lossy(data);
+                    if utf8.contains('\u{fffd}') {
+                        // 有替换字符, 用 GBK 解码
+                        encoding_rs::GBK.decode(data).0.into_owned()
+                    } else {
+                        utf8.into_owned()
+                    }
+                }
+                _ => String::from_utf8_lossy(data).into_owned(),
+            }
         }
 
         pub fn exec(&self, cmd: &str) -> anyhow::Result<String> {
@@ -126,13 +145,20 @@ mod imp {
             Ok(stdout)
         }
 
+        /// v0.4.4: Windows 不自动包装,用户需用 PowerShell 语法避免 GBK 乱码
+        /// 例: hostname → $env:COMPUTERNAME, dir → Get-ChildItem
+        fn wrap_cmd(&self, cmd: &str) -> String {
+            cmd.to_string()
+        }
+
         /// 分离 stdout/stderr 执行。返回 (stdout, stderr, exit_code)。
         /// v0.4.3: 修复 base64 解析被 stderr 污染的问题 —— 之前 exec 把 stderr 合并进 output,
         /// 导致 read_file 的 base64 输出混入 locale 警告解码失败。
         pub fn exec_sep(&self, cmd: &str) -> anyhow::Result<(String, String, i32)> {
+            let cmd = self.wrap_cmd(cmd);
             self.rt.block_on(async {
                 let mut channel = self.handle.channel_open_session().await?;
-                channel.exec(true, cmd).await?;
+                channel.exec(true, cmd.as_bytes()).await?;
 
                 let mut stdout = String::new();
                 let mut stderr = String::new();
@@ -141,7 +167,7 @@ mod imp {
                     let Some(msg) = channel.wait().await else { break; };
                     match msg {
                         ChannelMsg::Data { ref data } => {
-                            stdout.push_str(&String::from_utf8_lossy(data));
+                            stdout.push_str(&self.decode_remote(data));
                         }
                         ChannelMsg::ExtendedData { ref data, .. } => {
                             stderr.push_str(&String::from_utf8_lossy(data));
