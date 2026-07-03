@@ -10,7 +10,12 @@ use std::path::Path;
 use std::fs;
 use std::time::SystemTime;
 
-pub fn run(dir: &Path, json_output: bool, all: bool, sort_by: Option<&str>, depth: Option<usize>, max_results: Option<usize>) -> anyhow::Result<()> {
+pub fn run(dir: &Path, json_output: bool, all: bool, sort_by: Option<&str>, depth: Option<usize>, max_results: Option<usize>, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    // 远程模式: 在远端执行等效命令
+    if let Some(rc) = remote {
+        return run_remote(dir, depth, rc);
+    }
+
     let d = if dir.exists() { dir } else { Path::new(".") };
     let mut entries: Vec<Entry> = Vec::new();
     let max_d = depth.unwrap_or(1);
@@ -109,4 +114,30 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d)
+}
+
+/// 远程 ls: Windows 用 Get-ChildItem, Linux 用 find+stat
+fn run_remote(dir: &Path, depth: Option<usize>, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    let path_str = dir.to_string_lossy();
+    let max_d = depth.unwrap_or(1);
+
+    if rc.is_windows() {
+        // PowerShell: 用 Get-ChildItem 输出简洁的目录列表
+        let cmd = format!(
+            "Get-ChildItem -Path '{}' -Recurse -Depth {} -Force | Select-Object Mode, Length, LastWriteTime, Name | Format-Table -AutoSize",
+            path_str, max_d
+        );
+        let out = rc.exec(&cmd)?;
+        println!("{}", out.trim_end());
+    } else {
+        // Linux: 用 ls -la 输出
+        let cmd = format!("ls -la --time-style=long-iso '{}'", path_str);
+        let out = rc.exec(&cmd)?;
+        if out.trim().is_empty() {
+            println!("Directory: {} (0 entries)", path_str);
+            return Ok(());
+        }
+        println!("{}", out.trim_end());
+    }
+    Ok(())
 }

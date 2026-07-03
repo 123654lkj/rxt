@@ -4,7 +4,12 @@
 
 use sysinfo::{System, ProcessRefreshKind, Users, ProcessesToUpdate};
 
-pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str, tree: bool, json: bool) -> anyhow::Result<()> {
+pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str, tree: bool, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    // 远程模式: 在远端执行等效命令
+    if let Some(rc) = remote {
+        return run_remote(name_filter, kill, top, sort, rc);
+    }
+
     let mut sys = System::new_all();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -179,4 +184,50 @@ fn glob_rec(p: &[char], pi: usize, s: &[char], si: usize) -> bool {
         '?' => si < s.len() && glob_rec(p, pi + 1, s, si + 1),
         c => si < s.len() && s[si] == c && glob_rec(p, pi + 1, s, si + 1),
     }
+}
+
+/// 远程 ps: Windows 用 Get-Process, Linux 用 ps
+fn run_remote(name_filter: Option<&str>, kill: Option<&str>, top: usize, _sort: &str, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    // kill 模式
+    if let Some(target) = kill {
+        if rc.is_windows() {
+            let cmd = format!("Stop-Process -Name '{}' -Force", target);
+            rc.exec(&cmd)?;
+            println!("已终止进程: {}", target);
+        } else {
+            let cmd = format!("pkill -f '{}'", target);
+            rc.exec(&cmd)?;
+            println!("已终止进程: {}", target);
+        }
+        return Ok(());
+    }
+
+    // 列表模式
+    if rc.is_windows() {
+        // PowerShell: Get-Process 输出 (简化格式避免转义问题)
+        let filter = if let Some(name) = name_filter {
+            format!(" | Where-Object {{ $_.ProcessName -like '{}' }}", name)
+        } else {
+            String::new()
+        };
+        let top_limit = if top > 0 { format!(" | Select-Object -First {}", top) } else { String::new() };
+        let cmd = format!(
+            "Get-Process{}{} | Sort-Object WorkingSet64 -Descending | Select-Object Id, ProcessName, CPU, @{{N='MemMB';E={{[math]::Round($_.WorkingSet64/1MB,1)}}}} | Format-Table -AutoSize",
+            filter, top_limit
+        );
+        let out = rc.exec(&cmd)?;
+        println!("{}", out.trim_end());
+    } else {
+        // Linux: ps aux 输出
+        let filter = if let Some(name) = name_filter {
+            format!(" | grep -i '{}'", name)
+        } else {
+            String::new()
+        };
+        let top_limit = if top > 0 { format!(" | head -n {}", top + 1) } else { String::new() };
+        let cmd = format!("ps aux --sort=-%mem{}{}", filter, top_limit);
+        let out = rc.exec(&cmd)?;
+        println!("{}", out.trim_end());
+    }
+    Ok(())
 }

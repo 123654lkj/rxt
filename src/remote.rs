@@ -145,6 +145,16 @@ mod imp {
             Ok(stdout)
         }
 
+        /// 远程是 Windows 吗?
+        pub fn is_windows(&self) -> bool {
+            matches!(self.os, RemoteOs::Windows)
+        }
+
+        /// 远程是 Linux 吗?
+        pub fn is_linux(&self) -> bool {
+            matches!(self.os, RemoteOs::Linux)
+        }
+
         /// v0.4.4: Windows 不自动包装,用户需用 PowerShell 语法避免 GBK 乱码
         /// 例: hostname → $env:COMPUTERNAME, dir → Get-ChildItem
         fn wrap_cmd(&self, cmd: &str) -> String {
