@@ -662,22 +662,7 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             let ignores: Vec<String> = ignore.as_deref()
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
-            if let Some(ref rc) = remote {
-                // 远程 tree: Windows 用 tree.exe, Linux 用 tree 命令
-                if rc.is_windows() {
-                    let cmd = format!("tree /F /A '{}'", path.display());
-                    let out = rc.exec(&cmd)?;
-                    println!("{}", out.trim_end());
-                } else {
-                    let depth_arg = depth.map(|d| format!("--depth {}", d)).unwrap_or_default();
-                    let dirs_only_arg = if dirs_only { "-d" } else { "" };
-                    let cmd = format!("tree {} {} '{}'", depth_arg, dirs_only_arg, path.display());
-                    let out = rc.exec(&cmd)?;
-                    println!("{}", out.trim_end());
-                }
-            } else {
-                tree::run(&path, depth, &ignores, dirs_only, json)?;
-            }
+            tree::run(&path, depth, &ignores, dirs_only, json, remote)?;
         }
         Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
         Command::Unzip { archive, target, list_only, json, strip } => unzip::run(&archive, target.as_deref(), list_only, json, strip)?,
@@ -784,122 +769,13 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, remote)?;
         }
         Command::Service { name, start, stop, running, json } => {
-            if let Some(ref rc) = remote {
-                // 远程 service: Windows 用 sc.exe, Linux 用 systemctl
-                if rc.is_windows() {
-                    if let Some(n) = start {
-                        let cmd = format!("sc.exe start {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(n) = stop {
-                        let cmd = format!("sc.exe stop {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(n) = name {
-                        let cmd = format!("sc.exe query {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else {
-                        let cmd = "sc.exe query type= service state= all";
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                } else {
-                    // Linux: systemctl
-                    if let Some(n) = start {
-                        let cmd = format!("systemctl start {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(n) = stop {
-                        let cmd = format!("systemctl stop {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(n) = name {
-                        let cmd = format!("systemctl status {}", n);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else {
-                        let running_arg = if running { "--state=running" } else { "" };
-                        let cmd = format!("systemctl list-units --type=service {}", running_arg);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                }
-            } else {
-                service::run(name.as_deref(), start.as_deref(), stop.as_deref(), running, json)?;
-            }
+            service::run(name.as_deref(), start.as_deref(), stop.as_deref(), running, json, remote)?;
         }
         Command::Reg { get, set, delete, value_name, value, list, json } => {
-            if let Some(ref rc) = remote {
-                // 远程 reg: 仅 Windows 支持
-                if !rc.is_windows() {
-                    println!("远程 reg 命令仅支持 Windows 目标");
-                } else {
-                    if let Some(g) = get {
-                        let vn = value_name.as_deref().unwrap_or("(Default)");
-                        let cmd = format!("reg query \"{}\" /v \"{}\"", g, vn);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(s) = set {
-                        let vn = value_name.as_deref().unwrap_or("(Default)");
-                        let v = value.as_deref().unwrap_or("");
-                        let cmd = format!("reg add \"{}\" /v \"{}\" /t REG_SZ /d \"{}\" /f", s, vn, v);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(d) = delete {
-                        let vn = value_name.as_deref().unwrap_or("(Default)");
-                        let cmd = format!("reg delete \"{}\" /v \"{}\" /f", d, vn);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else if let Some(l) = list {
-                        let cmd = format!("reg query \"{}\"", l);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                }
-            } else {
-                reg::run(get.as_deref(), set.as_deref(), delete.as_deref(), value_name.as_deref(), value.as_deref(), list.as_deref(), json)?;
-            }
+            reg::run(get.as_deref(), set.as_deref(), delete.as_deref(), value_name.as_deref(), value.as_deref(), list.as_deref(), json, remote)?;
         }
         Command::Net { conn, resolve, route, port, json } => {
-            if let Some(ref rc) = remote {
-                // 远程 net: 直接执行远程命令
-                if let Some(c) = conn {
-                    if rc.is_windows() {
-                        let cmd = format!("netstat -ano | Select-String {} | Select-Object -First 20", c.to_uppercase());
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else {
-                        let cmd = format!("ss -tlnp | grep {}", c);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                } else if route {
-                    if rc.is_windows() {
-                        let cmd = "route print";
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else {
-                        let cmd = "ip route";
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                } else if let Some(p) = port {
-                    if rc.is_windows() {
-                        let cmd = format!("netstat -ano | Select-String ':{}' | Select-Object -First 20", p);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    } else {
-                        let cmd = format!("ss -tlnp | grep :{}", p);
-                        let out = rc.exec(&cmd)?;
-                        println!("{}", out.trim_end());
-                    }
-                } else {
-                    println!("远程 net 命令需要指定 --conn, --route 或 --port 参数");
-                }
-            } else {
-                net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json)?;
-            }
+            net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json, remote)?;
         }
         Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;

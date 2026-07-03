@@ -98,7 +98,7 @@ fn walk(base: &Path, current: &Path, files: &mut Vec<(String, u64)>) -> anyhow::
         if path.is_dir() {
             walk(base, &path, files)?;
         } else if path.is_file() {
-            let rel = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+            let rel = path.strip_prefix(base).unwrap_or(path.as_path()).to_string_lossy().replace('\\', "/");
             let size = entry.metadata()?.len();
             files.push((rel, size));
         }

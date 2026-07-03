@@ -14,7 +14,8 @@
 
 use std::process::Command;
 
-pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running: bool, json: bool) -> anyhow::Result<()> {
+pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running: bool, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    if let Some(rc) = remote { return run_remote(name, start, stop, running, rc); }
     if cfg!(not(target_os = "windows")) {
         anyhow::bail!("service 命令仅支持 Windows");
     }
@@ -137,4 +138,20 @@ fn parse_services(text: &str) -> Vec<Service> {
     }
     if have { svcs.push(cur); }
     svcs
+}
+
+fn run_remote(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running: bool, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    let cmd = if rc.is_windows() {
+        if let Some(n) = start { format!("sc.exe start {}", n) }
+        else if let Some(n) = stop { format!("sc.exe stop {}", n) }
+        else if let Some(n) = name { format!("sc.exe query {}", n) }
+        else { "sc.exe query type= service state= all".into() }
+    } else {
+        if let Some(n) = start { format!("systemctl start {}", n) }
+        else if let Some(n) = stop { format!("systemctl stop {}", n) }
+        else if let Some(n) = name { format!("systemctl status {}", n) }
+        else { format!("systemctl list-units --type=service {}", if running { "--state=running" } else { "" }) }
+    };
+    println!("{}", rc.exec(&cmd)?.trim_end());
+    Ok(())
 }

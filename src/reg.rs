@@ -13,7 +13,8 @@
 
 use std::process::Command;
 
-pub fn run(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_name: Option<&str>, value: Option<&str>, list: Option<&str>, json: bool) -> anyhow::Result<()> {
+pub fn run(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_name: Option<&str>, value: Option<&str>, list: Option<&str>, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    if let Some(rc) = remote { return run_remote(get, set, delete, value_name, value, list, rc); }
     if cfg!(not(target_os = "windows")) {
         anyhow::bail!("reg 命令仅支持 Windows");
     }
@@ -170,4 +171,16 @@ fn do_delete(path: &str, name: Option<&str>) -> anyhow::Result<()> {
     } else {
         anyhow::bail!("删除失败: {}", String::from_utf8_lossy(&out.stderr).trim())
     }
+}
+
+fn run_remote(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_name: Option<&str>, value: Option<&str>, list: Option<&str>, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    if !rc.is_windows() { println!("远程 reg 命令仅支持 Windows 目标"); return Ok(()); }
+    let vn = value_name.unwrap_or("(Default)");
+    let cmd = if let Some(g) = get { format!("reg query \"{}\" /v \"{}\"", g, vn) }
+    else if let Some(s) = set { format!("reg add \"{}\" /v \"{}\" /t REG_SZ /d \"{}\" /f", s, vn, value.unwrap_or("")) }
+    else if let Some(d) = delete { format!("reg delete \"{}\" /v \"{}\" /f", d, vn) }
+    else if let Some(l) = list { format!("reg query \"{}\"", l) }
+    else { return Ok(()); };
+    println!("{}", rc.exec(&cmd)?.trim_end());
+    Ok(())
 }

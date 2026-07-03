@@ -62,8 +62,8 @@ fn deploy_to_host(
     let password = hosts.get_password(&config).unwrap_or_default();
 
     // 探测远端 OS (用 sshpass + 一条命令)
-    let os_probe = format!("sshpass -p '{}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} 'uname -s 2>/dev/null || echo WIN'", password, config.user, config.host);
-    let probe_out = Command::new("bash").arg("-c").arg(&os_probe).output()?;
+    let os_probe = format!("sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} 'uname -s 2>/dev/null || echo WIN'", config.user, config.host);
+    let probe_out = Command::new("bash").arg("-c").arg(&os_probe).env("SSHPASS", &password).output()?;
     let is_windows = !String::from_utf8_lossy(&probe_out.stdout).to_lowercase().contains("linux");
 
     // v0.4.2: 交叉平台检查 - 本地二进制格式必须匹配目标 OS
@@ -96,8 +96,8 @@ fn deploy_to_host(
         let exe_name = std::path::Path::new(&rp)
             .file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("rxt".into());
         let kill_cmd = format!(
-            "sshpass -p '{}' ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -Command \"Stop-Process -Name {} -Force -ErrorAction SilentlyContinue\"'",
-            password, config.user, config.host, exe_name
+            "sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -Command \"Stop-Process -Name {} -Force -ErrorAction SilentlyContinue\"'",
+            config.user, config.host, exe_name
         );
         let _ = Command::new("bash").arg("-c").arg(&kill_cmd).output();
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -107,29 +107,29 @@ fn deploy_to_host(
     if !is_windows {
         // Linux: scp 到 /tmp 再 sudo mv (解决 /usr/local/bin 权限)
         let tmp_remote = "/tmp/_rxt_deploy_tmp";
-        let scp = format!("sshpass -p '{}' scp -o StrictHostKeyChecking=no {} {}@{}:{}",
-            password, binary.display(), config.user, config.host, tmp_remote);
-        let scp_result = Command::new("bash").arg("-c").arg(&scp).output()?;
+        let scp = format!("sshpass -e scp -o StrictHostKeyChecking=no {} {}@{}:{}",
+            binary.display(), config.user, config.host, tmp_remote);
+        let scp_result = Command::new("bash").arg("-c").arg(&scp).env("SSHPASS", &password).output()?;
         if !scp_result.status.success() {
             let err = String::from_utf8_lossy(&scp_result.stderr);
             anyhow::bail!("scp 失败: {}", err.trim());
         }
         // sudo mv + chmod
-        let mv = format!("sshpass -p '{}' ssh -o StrictHostKeyChecking=no {}@{} 'echo {} | sudo -S mv {} {} && sudo chmod 755 {}'",
-            password, config.user, config.host, password, tmp_remote, rp, rp);
-        let mv_result = Command::new("bash").arg("-c").arg(&mv).output()?;
+        let mv = format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'echo {} | sudo -S mv {} {} && sudo chmod 755 {}'",
+            config.user, config.host, password, tmp_remote, rp, rp);
+        let mv_result = Command::new("bash").arg("-c").arg(&mv).env("SSHPASS", &password).output()?;
         if !mv_result.status.success() {
             // sudo 可能没装或没权限, 尝试直接 mv
-            let mv2 = format!("sshpass -p '{}' ssh -o StrictHostKeyChecking=no {}@{} 'mv {} {} 2>/dev/null || cp {} {}'",
-                password, config.user, config.host, tmp_remote, rp, tmp_remote, rp);
+            let mv2 = format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'mv {} {} 2>/dev/null || cp {} {}'",
+                config.user, config.host, tmp_remote, rp, tmp_remote, rp);
             let _ = Command::new("bash").arg("-c").arg(&mv2).output();
         }
     } else {
         // Windows: 直接 scp (已 kill 进程)
         let scp_target = format!("{}@{}:{}", config.user, config.host, rp.replace('\\', "/"));
-        let scp = format!("sshpass -p '{}' scp -o StrictHostKeyChecking=no {} {}",
-            password, binary.display(), scp_target);
-        let scp_result = Command::new("bash").arg("-c").arg(&scp).output()?;
+        let scp = format!("sshpass -e scp -o StrictHostKeyChecking=no {} {}",
+            binary.display(), scp_target);
+        let scp_result = Command::new("bash").arg("-c").arg(&scp).env("SSHPASS", &password).output()?;
         if !scp_result.status.success() {
             let err = String::from_utf8_lossy(&scp_result.stderr);
             anyhow::bail!("scp 失败: {}", err.trim());
@@ -141,13 +141,13 @@ fn deploy_to_host(
         // 用 EncodedCommand 避免 pwsh 引号转义地狱
         let ps_script = format!("(Get-Item '{}').Length", rp);
         let b64 = base64::engine::general_purpose::STANDARD.encode(ps_script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
-        format!("sshpass -p '{}' ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -EncodedCommand {}'",
-            password, config.user, config.host, b64)
+        format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -EncodedCommand {}'",
+            config.user, config.host, b64)
     } else {
-        format!("sshpass -p '{}' ssh -o StrictHostKeyChecking=no {}@{} 'stat -c %s \"{}\"'",
-            password, config.user, config.host, rp)
+        format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'stat -c %s \"{}\"'",
+            config.user, config.host, rp)
     };
-    let v_result = Command::new("bash").arg("-c").arg(&verify).output()?;
+    let v_result = Command::new("bash").arg("-c").arg(&verify).env("SSHPASS", &password).output()?;
     let actual: u64 = String::from_utf8_lossy(&v_result.stdout).trim().parse().unwrap_or(0);
     if actual != local_size {
         anyhow::bail!("字节不一致: 本地 {} / 远程 {}", local_size, actual);

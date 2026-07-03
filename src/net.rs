@@ -15,7 +15,8 @@
 use std::net::ToSocketAddrs;
 use std::process::Command;
 
-pub fn run(conn: Option<&str>, resolve: Option<&str>, route: bool, port: Option<&str>, json: bool) -> anyhow::Result<()> {
+pub fn run(conn: Option<&str>, resolve: Option<&str>, route: bool, port: Option<&str>, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    if let Some(rc) = remote { return run_remote(conn, route, port, rc); }
     if let Some(host) = resolve {
         return do_resolve(host, json);
     }
@@ -200,4 +201,18 @@ struct Conn {
     remote: String,
     state: String,
     pid: u32,
+}
+
+fn run_remote(conn: Option<&str>, route: bool, port: Option<&str>, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    let cmd = if let Some(c) = conn {
+        if rc.is_windows() { format!("netstat -ano | Select-String {} | Select-Object -First 20", c.to_uppercase()) }
+        else { format!("ss -tlnp | grep {}", c) }
+    } else if route {
+        if rc.is_windows() { "route print".into() } else { "ip route".into() }
+    } else if let Some(p) = port {
+        if rc.is_windows() { format!("netstat -ano | Select-String ':{}' | Select-Object -First 20", p) }
+        else { format!("ss -tlnp | grep :{}", p) }
+    } else { println!("远程 net 命令需要指定 --conn, --route 或 --port 参数"); return Ok(()); };
+    println!("{}", rc.exec(&cmd)?.trim_end());
+    Ok(())
 }

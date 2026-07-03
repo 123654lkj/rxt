@@ -2,7 +2,10 @@ use std::path::Path;
 use std::fs;
 
 /// Directory tree — visualization or JSON output
-pub fn run(path: &Path, max_depth: Option<usize>, ignore_patterns: &[String], only_dirs: bool, json_output: bool) -> anyhow::Result<()> {
+pub fn run(path: &Path, max_depth: Option<usize>, ignore_patterns: &[String], only_dirs: bool, json_output: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    if let Some(rc) = remote {
+        return run_remote(path, max_depth, only_dirs, rc);
+    }
     if json_output {
         let mut entries: Vec<serde_json::Value> = Vec::new();
         collect_json(path, &mut entries, max_depth, ignore_patterns, only_dirs, 0)?;
@@ -99,5 +102,18 @@ fn print_tree(dir: &Path, prefix: &str, depth: usize, max_depth: Option<usize>, 
             println!("{}{}{}", prefix, connector, name);
         }
     }
+    Ok(())
+}
+
+fn run_remote(path: &Path, max_depth: Option<usize>, only_dirs: bool, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+    let cmd = if rc.is_windows() {
+        format!("tree /F /A '{}'", path.display())
+    } else {
+        let depth_arg = max_depth.map(|d| format!("-L {}", d)).unwrap_or_default();
+        let dirs_only_arg = if only_dirs { "-d" } else { "" };
+        format!("tree {} {} '{}'", depth_arg, dirs_only_arg, path.display())
+    };
+    let out = rc.exec(&cmd)?;
+    println!("{}", out.trim_end());
     Ok(())
 }
