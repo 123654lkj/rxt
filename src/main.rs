@@ -341,6 +341,32 @@ enum Command {
     },
     // ===== 高效工具族 (v0.4.0+) =====
     #[command(about = "自我更新 — git pull + 编译 + 热替换(自举封神)")]
+    /// 一键部署二进制到远程机器 (自动处理进程占用 + 字节验证)
+    Deploy {
+        binary: PathBuf,
+        #[arg(short = 't', long = "to")]
+        to: Vec<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long = "remote-path")]
+        remote_path: Option<String>,
+    },
+    /// 批量查询版本 + 一致性检测
+    Version {
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// 跨机目录同步 (rsync 替代)
+    Sync {
+        local_dir: PathBuf,
+        remote: String,
+        #[arg(long)]
+        delete: bool,
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
     Upgrade {
         #[arg(long, help = "仓库路径(默认自动探测)")] repo: Option<String>,
         #[arg(long, help = "只检查不升级")] check: bool,
@@ -493,6 +519,9 @@ mod reg;
 mod net;
 // 高效工具族 (v0.4.0+)
 mod upgrade;
+mod deploy;
+mod version;
+mod sync;
 mod serve;
 mod snapshot;
 mod qr;
@@ -520,6 +549,28 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     
+    // v0.4.2: Deploy/Version 有自己的 group 逻辑，不走全局批量拦截
+    match &cli.command {
+        Command::Deploy { binary, to, all, remote_path } => {
+            let (targets, is_group) = if *all {
+                (vec!["all".to_string()], true)
+            } else {
+                (to.clone(), false)
+            };
+            return deploy::run(binary, &targets, is_group, remote_path.as_deref());
+        }
+        Command::Version { all, host } => {
+            if *all {
+                return version::run_remote("all", true);
+            }
+            if let Some(h) = host {
+                return version::run_remote(h, false);
+            }
+            return version::run_local();
+        }
+        _ => {}
+    }
+
     // 如果有 --group,批量执行
     if let Some(ref group_name) = cli.group {
         let hosts_config = crate::hosts::HostsFile::load()?;
@@ -915,6 +966,8 @@ fn main() -> anyhow::Result<()> {
         Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;
         }
+        // Deploy/Version/Sync 在 main() 前置处理, 不会到达这里
+        Command::Deploy { .. } | Command::Version { .. } | Command::Sync { .. } => unreachable!(),
         Command::Serve { dir, port, no_qr } => {
             serve::run(dir.as_deref(), port, no_qr)?;
         }
