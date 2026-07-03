@@ -506,6 +506,7 @@ mod git;
 mod ctx;
 mod hosts;
 mod remote;
+mod storage;
 mod map;
 mod digest;
 mod refs;
@@ -622,10 +623,9 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             }
         }
         Command::Cat { path } => {
-            if let Some(ref rc) = remote {
-                // 远程 cat: 直接读取文件内容
-                let content = rc.read_file(&path)?;
-                let text = String::from_utf8_lossy(&content);
+            let storage = crate::storage::Storage::from_remote(remote);
+            if storage.is_remote() {
+                let (text, _) = storage.read_text(&path)?;
                 print!("{}", text);
             } else {
                 cat::run(&path)?;

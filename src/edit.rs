@@ -21,11 +21,8 @@ struct ScriptOp {
 /// 从 JSON 脚本文件执行多步变换
 pub fn run_script(path: &Path, script_path: &Path, preview: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
     // 读取原始文件指纹
-    let raw = if let Some(remote) = remote {
-        remote.read_file(path)?
-    } else {
-        fs::read(path)?
-    };
+    let storage = crate::storage::Storage::from_remote(remote);
+    let raw = storage.read_file(path)?;
     let sig = FileSignature::detect(&raw);
     
     // 转为内部 UTF-8 + LF
@@ -110,11 +107,7 @@ pub fn run_script(path: &Path, script_path: &Path, preview: bool, remote: Option
         } else {
             // 应用原始格式写回
             let formatted = apply_format(&file_content, &sig);
-            if let Some(remote) = remote {
-                remote.write_file(path, formatted.as_bytes())?;
-            } else {
-                fs::write(path, formatted.as_bytes())?;
-            }
+            storage.write_file(path, formatted.as_bytes())?;
             println!("  Updated {} ({} script ops, preserved: {} {})", 
                      path.display(), ops.len(), sig.encoding, sig.line_ending);
         }
@@ -158,11 +151,8 @@ pub fn run(
         _ => None,
     };
     // 读取原始文件指纹
-    let raw = if let Some(remote) = remote {
-        remote.read_file(path)?
-    } else {
-        fs::read(path)?
-    };
+    let storage = crate::storage::Storage::from_remote(remote);
+    let raw = storage.read_file(path)?;
     let sig = FileSignature::detect(&raw);
     
     // 转为内部 UTF-8 + LF
@@ -232,11 +222,7 @@ pub fn run(
                 output
             };
             let formatted = apply_format(&final_out, &sig);
-            if let Some(remote) = remote {
-                remote.write_file(path, formatted.as_bytes())?;
-            } else {
-                fs::write(path, formatted.as_bytes())?;
-            }
+            storage.write_file(path, formatted.as_bytes())?;
             println!("  Updated {} (preserved: {} {})", path.display(), sig.encoding, sig.line_ending);
         }
     } else {
@@ -254,11 +240,8 @@ pub fn run_line_range(
     preview: bool,
     remote: Option<&crate::remote::RemoteChannel>,
 ) -> anyhow::Result<()> {
-    let raw = if let Some(remote) = remote {
-        remote.read_file(path)?
-    } else {
-        std::fs::read(path)?
-    };
+    let storage = crate::storage::Storage::from_remote(remote);
+    let raw = storage.read_file(path)?;
     let sig = FileSignature::detect(&raw);
     let text = to_utf8_lf(&raw, &sig);
     let lines: Vec<&str> = text.lines().collect();
@@ -299,11 +282,7 @@ pub fn run_line_range(
     }
     
     let formatted = apply_format(&output, &sig);
-    if let Some(remote) = remote {
-        remote.write_file(path, formatted.as_bytes())?;
-    } else {
-        std::fs::write(path, formatted.as_bytes())?;
-    }
+    storage.write_file(path, formatted.as_bytes())?;
     println!("  Updated lines {}-{} in {} (preserved: {} {})", start, end, path.display(), sig.encoding, sig.line_ending);
     Ok(())
 }
