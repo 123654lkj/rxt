@@ -54,7 +54,7 @@ pub fn run(subcmd: GitSubCmd, json_output: bool) -> anyhow::Result<()> {
     }
 }
 
-#[derive(clap::Subcommand)]
+#[derive(clap::Subcommand, Clone)]
 pub enum GitSubCmd {
     #[command(about = "查看改动状态")]
     Status { path: Option<PathBuf> },

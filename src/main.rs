@@ -12,7 +12,7 @@ pub(crate) struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Command {
     #[command(about = "块替换")]
     Replace {
@@ -474,7 +474,7 @@ enum Command {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum MemAction {
     #[command(about = "保存记忆")]
     Save { content: String, #[arg(long, default_value = "code")] category: String, #[arg(long, default_value_t = 0.6)] importance: f64 },
@@ -572,119 +572,57 @@ fn main() -> anyhow::Result<()> {
     }
 
     // 如果有 --group,批量执行
+    // v0.5.1: 统一执行路径 — group 和 host 都调用 execute_command
     if let Some(ref group_name) = cli.group {
         let hosts_config = crate::hosts::HostsFile::load()?;
         let members = hosts_config.get_group_members(group_name)?;
-        
         for member in &members {
-            eprintln!("
-=== [{}] ===", member);
-            let remote_channel = crate::remote::RemoteChannel::connect(member)?;
-            
-            match &cli.command {
-                Command::Read { path, encoding, number, head, tail, lines, budget, json } => {
-                    read::run(path, encoding.clone(), *number, *head, *tail, lines.clone(), budget.clone(), *json, Some(&remote_channel))?;
-                }
-                Command::Stat { path, json } => {
-                    stat::run(path, *json, Some(&remote_channel))?;
-                }
-                Command::Sed { path, pattern, replacement, preview, line, regex: _ } => {
-                    sed::run(path, pattern, replacement, *preview, *line, false, Some(&remote_channel))?;
-                }
-                Command::Write { path, content, append, file, b64, preserve, from: _ } => {
-                    if let Some(f) = file {
-                        write::run_file(path, f, *append, Some(&remote_channel))?;
-                    } else if *b64 {
-                        let j: Vec<String> = content.iter().cloned().collect();
-                        write::run_b64(path, &j.join(""), *append, Some(&remote_channel))?;
-                    } else {
-                        let j: Vec<String> = content.iter().cloned().collect();
-                        let joined = j.join("
-");
-                        let opt: Option<&str> = if j.is_empty() { None } else { Some(&joined) };
-                        write::run(path, opt, *append, *preserve, Some(&remote_channel))?;
-                    }
-                }
-                Command::Cat { path } => {
-                    cat::run(path)?;
-                }
-                Command::Grep { pattern, path, context, file_type, count, invert, json, regex: _, max_results, head, offset, jsonl, no_ignore } => {
-                    grep::run(pattern, path, *context, file_type.as_deref(), *count, *invert, *json, false, *max_results, *head, *offset, *jsonl, *no_ignore, Some(&remote_channel))?;
-                }
-                Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex: _, json, max_results, head, offset } => {
-                    find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), *context, *case_sensitive, *count, *stats, replace.as_deref(), replace_with.as_deref(), *preview, false, *json, *max_results, *head, *offset, Some(&remote_channel))?;
-                }
-                Command::Replace { target, old, new, all, preview, content } => {
-                    let nc: Option<String> = if let Some(f) = new {
-                        Some(std::fs::read_to_string(f)?)
-                    } else if !content.is_empty() {
-                        Some(content.join("
-"))
-                    } else { None };
-                    replace::run(target, old, nc.as_deref(), *all, *preview, Some(&remote_channel))?;
-                }
-                Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex: _ } => {
-                    let rep = replace.as_deref().and_then(|s| {
-                        let mut p = s.splitn(2, ',');
-                        Some((p.next()?, p.next()?))
-                    });
-                    if let Some(sp) = script {
-                        edit::run_script(path, sp, *preview, Some(&remote_channel))?;
-                    } else {
-                        edit::run(path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, content, *preview, false, Some(&remote_channel))?;
-                    }
-                }
-                Command::Exec { code, b64, lang, write, file, login: _, json, container, db, sql_user } => {
-                    let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.clone().unwrap_or_default() };
-                    let ec = exec::run(&cs, *b64, lang.as_deref(), write.as_ref(), Some(&remote_channel), false, *json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
-                    if ec != 0 { std::process::exit(ec); }
-                }
-                Command::Ctx { path, max_lines, json } => {
-                    ctx::run(path, *max_lines, *json, None)?;
-                }
-                _ => {
-                    eprintln!("  Group execution not supported for this command yet");
-                }
-            }
+            eprintln!("\n=== [{}] ===", member);
+            let rc = crate::remote::RemoteChannel::connect(member)?;
+            execute_command(cli.command.clone(), Some(&rc))?;
         }
         return Ok(());
     }
-    
-    // 如果有 --host,建立远程连接
+
+    // --host: 建立远程连接
     let remote_channel = if let Some(ref host) = cli.host {
         Some(crate::remote::RemoteChannel::connect(host)?)
-    } else {
-        None
-    };
-    
-    match cli.command {
+    } else { None };
+
+    execute_command(cli.command, remote_channel.as_ref())?;
+    Ok(())
+}
+
+/// v0.5.1: 统一命令分发 — 消灭 group/host 两套重复 dispatch
+fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+    match cmd {
         Command::Replace { target, old, new, all, preview, content } => {
             let nc: Option<String> = if let Some(f) = new {
                 Some(std::fs::read_to_string(f)?)
             } else if !content.is_empty() {
                 Some(content.join("\n"))
             } else { None };
-            replace::run(&target, &old, nc.as_deref(), all, preview, remote_channel.as_ref())?;
+            replace::run(&target, &old, nc.as_deref(), all, preview, remote)?;
         }
         Command::Read { path, encoding, number, head, tail, lines, budget, json } => {
-            read::run(&path, encoding, number, head, tail, lines, budget, json, remote_channel.as_ref())?;
+            read::run(&path, encoding, number, head, tail, lines, budget, json, remote)?;
         }
         Command::Write { path, content, append, file, b64, preserve, from } => {
             if let Some(f) = from {
                 let data = std::fs::read(&f)?;
-                write::run_bytes(&path, &data, append, preserve, remote_channel.as_ref())?;
+                write::run_bytes(&path, &data, append, preserve, remote)?;
             } else if let Some(f) = file {
-                write::run_file(&path, &f, append, remote_channel.as_ref())?;
+                write::run_file(&path, &f, append, remote)?;
             } else if b64 {
                 let j = content.join("");
-                write::run_b64(&path, &j, append, remote_channel.as_ref())?;
+                write::run_b64(&path, &j, append, remote)?;
             } else {
                 let j = content.join("\n");
-                write::run(&path, if content.is_empty() { None } else { Some(&j) }, append, preserve, remote_channel.as_ref())?;
+                write::run(&path, if content.is_empty() { None } else { Some(&j) }, append, preserve, remote)?;
             }
         }
         Command::Cat { path } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 cat: 直接读取文件内容
                 let content = rc.read_file(&path)?;
                 let text = String::from_utf8_lossy(&content);
@@ -694,9 +632,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Jsonl { path, last, json } => jsonl::run(&path, last, json)?,
-        Command::Stat { path, json } => stat::run(&path, json, remote_channel.as_ref())?,
+        Command::Stat { path, json } => stat::run(&path, json, remote)?,
         Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex, json, max_results, head, offset } => {
-            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote_channel.as_ref())?;
+            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote)?;
         }
         Command::Struct { path, functions, types, deep, extract, json } => {
             struct_mod::run(&path, functions, types, deep, extract.as_deref(), json)?;
@@ -706,10 +644,10 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Dep { target, tree, json, check } => dep::run(&target, tree, json, check)?,
         Command::Sed { path, pattern, replacement, preview, line, regex } => {
-            sed::run(&path, &pattern, &replacement, preview, line, regex, remote_channel.as_ref())?;
+            sed::run(&path, &pattern, &replacement, preview, line, regex, remote)?;
         }
         Command::Grep { pattern, path, context, file_type, count, invert, json, regex, max_results, head, offset, jsonl, no_ignore } => {
-            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, remote_channel.as_ref())?;
+            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, remote)?;
         }
         Command::Patch { paths, reverse, check, output } => {
             patch::run(&paths, reverse, check, output.as_deref())?;
@@ -724,7 +662,7 @@ fn main() -> anyhow::Result<()> {
             let ignores: Vec<String> = ignore.as_deref()
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 tree: Windows 用 tree.exe, Linux 用 tree 命令
                 if rc.is_windows() {
                     let cmd = format!("tree /F /A '{}'", path.display());
@@ -743,7 +681,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
         Command::Unzip { archive, target, list_only, json, strip } => unzip::run(&archive, target.as_deref(), list_only, json, strip)?,
-        Command::Ls { dir, json, all, sort, depth, max } => ls::run(&dir, json, all, sort.as_deref(), depth, max, remote_channel.as_ref())?,
+        Command::Ls { dir, json, all, sort, depth, max } => ls::run(&dir, json, all, sort.as_deref(), depth, max, remote)?,
         Command::Http { method, url, headers, data, json_body, auth, timeout: _, show_headers, body_only } => http::run(&method, &url, &headers, data.as_deref(), json_body, auth.as_deref(), show_headers, body_only)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
@@ -751,11 +689,11 @@ fn main() -> anyhow::Result<()> {
                 Some((p.next()?, p.next()?))
             });
             if let Some(sp) = script {
-                edit::run_script(&path, &sp, preview, remote_channel.as_ref())?;
+                edit::run_script(&path, &sp, preview, remote)?;
             } else if let Some(lr) = line_range {
-                edit::run_line_range(&path, lr.as_str(), &content, preview, remote_channel.as_ref())?;
+                edit::run_line_range(&path, lr.as_str(), &content, preview, remote)?;
             } else {
-                edit::run(&path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, &content, preview, regex, remote_channel.as_ref())?;
+                edit::run(&path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, &content, preview, regex, remote)?;
             }
         }
         Command::Hash { path, algo, text } => hash::run(path.as_deref(), &algo, text.as_deref())?,
@@ -775,7 +713,7 @@ fn main() -> anyhow::Result<()> {
         Command::Time { cmd } => timecmd::run(&cmd)?,
         Command::Exec { code, b64, lang, write, file, login, json, container, db, sql_user } => {
             let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.unwrap_or_default() };
-            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote_channel.as_ref(), login, json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
+            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote, login, json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
         }
         Command::Sort { input, reverse, numeric, column, separator, unique } => {
             sort::run(input.as_deref(), reverse, numeric, column, separator, unique)?;
@@ -800,13 +738,13 @@ fn main() -> anyhow::Result<()> {
             clean::run(dir.as_deref(), target.as_deref(), profile.as_deref(), dry_run, all)?;
         }
         Command::Ctx { path, max_lines, json } => {
-            ctx::run(&path, max_lines, json, remote_channel.as_ref())?;
+            ctx::run(&path, max_lines, json, remote)?;
         }
         Command::Normalize { path, ending, remove_bom, json } => {
             normalize::run(&path, ending.as_deref(), remove_bom, json)?;
         }
         Command::Info { json } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 info: 显示远端 rxt 信息
                 let cmd = "rxt info";
                 match rc.exec(cmd) {
@@ -832,21 +770,21 @@ fn main() -> anyhow::Result<()> {
             refs::run(&symbol, p, json)?;
         }
         Command::Sysinfo { section, json } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程: 尝试 exec_rxt,失败则提示远端需装 rxt
                 match rc.exec_rxt(&["sysinfo"]) {
                     Ok(out) => print!("{}", out),
-                    Err(_) => println!("远端未安装 rxt,无法获取系统信息 (请用 rxt install --host {} 安装)", cli.host.as_deref().unwrap_or("?")),
+                    Err(_) => println!("远端未安装 rxt,无法获取系统信息 (请用 rxt install --host {} 安装)", rc.host_name()),
                 }
             } else {
                 sysinfo::run(section.as_deref().unwrap_or("all"), json)?;
             }
         }
         Command::Ps { name, kill, top, sort, tree, json } => {
-            ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, remote_channel.as_ref())?;
+            ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, remote)?;
         }
         Command::Service { name, start, stop, running, json } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 service: Windows 用 sc.exe, Linux 用 systemctl
                 if rc.is_windows() {
                     if let Some(n) = start {
@@ -892,7 +830,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Reg { get, set, delete, value_name, value, list, json } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 reg: 仅 Windows 支持
                 if !rc.is_windows() {
                     println!("远程 reg 命令仅支持 Windows 目标");
@@ -924,7 +862,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Net { conn, resolve, route, port, json } => {
-            if let Some(ref rc) = remote_channel {
+            if let Some(ref rc) = remote {
                 // 远程 net: 直接执行远程命令
                 if let Some(c) = conn {
                     if rc.is_windows() {
