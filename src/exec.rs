@@ -324,7 +324,7 @@ fn run_remote(text: &str, lang: &str, login: bool, json_output: bool, remote: &c
     let (tmp_path, exec_cmd, rm_cmd) = match os {
         crate::hosts::RemoteOs::Windows => {
             let tmp = format!("C:\\Users\\{}\\AppData\\Local\\Temp\\_rxt_exec.ps1", remote.host_config().user);
-            let exec = format!("pwsh -NoProfile -File \"{}\"", tmp);
+            let exec = format!("pwsh -NoProfile -Command \"[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8; & '{}'\"", tmp);
             let rm = format!("pwsh -NoProfile -Command \"Remove-Item \'{}\'  -Force -ErrorAction SilentlyContinue\"", tmp);
             (tmp, exec, rm)
         }
