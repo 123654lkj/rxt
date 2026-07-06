@@ -292,10 +292,12 @@ enum Command {
         #[arg(long, help = "token 预算")] budget: Option<usize>,
         #[arg(long)] json: bool,
     },
-    #[command(about = "v0.4.0 引用查找 — 谁调用谁, 语义分类 def/call")]
+    #[command(about = "引用查找 — 默认列出符号所有出现(def/call); --callers 谁调用了它; --callees 它调用了谁")]
     Refs {
         symbol: String,
         #[arg(short, long)] path: Option<PathBuf>,
+        #[arg(long, help = "谁调用了 symbol(列出真实调用点)")] callers: bool,
+        #[arg(long, help = "symbol 调用了谁(列出其函数体内的调用)")] callees: bool,
         #[arg(long)] json: bool,
     },
     // ===== 系统命令族 (v0.4.0+) — 对标 PowerShell =====
@@ -750,9 +752,9 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
         Command::Digest { path, threshold, budget, json } => {
             digest::run(&path, threshold, budget, json)?;
         }
-        Command::Refs { symbol, path, json } => {
+        Command::Refs { symbol, path, callers, callees, json } => {
             let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
-            refs::run(&symbol, p, json)?;
+            refs::run(&symbol, p, callers, callees, json)?;
         }
         Command::Sysinfo { section, json } => {
             if let Some(ref rc) = remote {
