@@ -1,2 +1,6 @@
 target/
 *.exe
+
+# 临时开发脚本
+patch_*.py
+*.bak

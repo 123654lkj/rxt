@@ -35,7 +35,8 @@ pub fn run_remote(target: &str, is_group: bool) -> anyhow::Result<()> {
                 let ver_cmd = match remote.remote_os() {
                 crate::hosts::RemoteOs::Windows => {
                     use base64::Engine;
-                    let ps = "& 'C:\rxt\rxt.exe' --version";
+                    // v0.7.3: 不再硬编码 C:\rxt\rxt.exe, 先查 PATH 再回退常见位置
+                    let ps = "$r = Get-Command rxt -ErrorAction SilentlyContinue; if (-not $r) { $r = Get-Item \"$env:USERPROFILE\\rxt.exe\" -ErrorAction SilentlyContinue }; if (-not $r) { $r = Get-Item \"C:\\rxt\\rxt.exe\" -ErrorAction SilentlyContinue }; if ($r) { & $r.FullName --version } else { \"NOT_FOUND\" }";
                     let b64 = base64::engine::general_purpose::STANDARD.encode(
                         ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
                     );

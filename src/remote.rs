@@ -79,14 +79,13 @@ mod imp {
             Ok(ch)
         }
 
-        async fn connect_async(config: &HostConfig) -> anyhow::Result<client::Handle<ClientHandler>> {
-            let ssh_config = Arc::new(client::Config::default());
-            let addr = format!("{}:{}", config.host, config.port);
-            let mut handle = client::connect(ssh_config, &addr, ClientHandler)
-                .await
-                .context("SSH connect failed")?;
-
-            // 认证: 优先密钥, 其次密码
+        /// 认证一个已连接的 SSH handle (密钥优先, 其次密码)。
+        /// 跳板机和目标机复用同一套逻辑。
+        async fn authenticate(
+            handle: &mut client::Handle<ClientHandler>,
+            config: &HostConfig,
+            hosts: &HostsFile,
+        ) -> anyhow::Result<()> {
             let authed = if let Some(key_path) = &config.key {
                 let key_path = shellexpand::tilde(key_path).into_owned();
                 let key_pair = load_secret_key(&key_path, None)
@@ -94,7 +93,7 @@ mod imp {
                 // russh 0.61: authenticate_publickey 要 PrivateKeyWithHashAlg
                 let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
                 handle.authenticate_publickey(&config.user, key_with_alg).await?
-            } else if let Some(password) = HostsFile::load().ok().and_then(|h| h.get_password(config)) {
+            } else if let Some(password) = hosts.get_password(config) {
                 handle.authenticate_password(&config.user, &password).await?
             } else {
                 anyhow::bail!("No auth method (no key/password for {})", config.user);
@@ -103,6 +102,53 @@ mod imp {
             if !authed.success() {
                 anyhow::bail!("Authentication failed for {}@{}", config.user, config.host);
             }
+            Ok(())
+        }
+
+        async fn connect_async(config: &HostConfig) -> anyhow::Result<client::Handle<ClientHandler>> {
+            let ssh_config = Arc::new(client::Config::default());
+            let hosts = HostsFile::load()?;
+
+            // v0.7.3: 跳板机模式 — 先 SSH 到 jump_host, 再 direct-tcpip 隧道到目标机
+            if let Some(jump_alias) = &config.jump_host {
+                // 1. 连接并认证跳板机
+                let jump_config = hosts.get_host(jump_alias)
+                    .with_context(|| format!("jump_host {} not found in hosts.toml", jump_alias))?
+                    .clone();
+                let jump_addr = format!("{}:{}", jump_config.host, jump_config.port);
+                let mut jump_handle = client::connect(ssh_config.clone(), &jump_addr, ClientHandler)
+                    .await
+                    .with_context(|| format!("jump host SSH connect failed: {}", jump_addr))?;
+                Self::authenticate(&mut jump_handle, &jump_config, &hosts).await
+                    .context("jump host authentication failed")?;
+
+                // 2. 通过跳板机开 direct-tcpip 隧道到目标机
+                let channel = jump_handle
+                    .channel_open_direct_tcpip(
+                        &config.host, config.port as u32,
+                        "127.0.0.1", 0,
+                    )
+                    .await
+                    .with_context(|| format!("direct-tcpip to {}:{} via {} failed",
+                        config.host, config.port, jump_alias))?;
+                // Channel → ChannelStream (impl AsyncRead+AsyncWrite+Unpin+Send)
+                let stream = channel.into_stream();
+
+                // 3. 在隧道上建第二层 SSH 连接 + 认证目标机
+                let mut handle = client::connect_stream(ssh_config, stream, ClientHandler)
+                    .await
+                    .with_context(|| format!("target SSH over tunnel failed: {}@{}:{}",
+                        config.user, config.host, config.port))?;
+                Self::authenticate(&mut handle, config, &hosts).await?;
+                return Ok(handle);
+            }
+
+            // 直连模式 (原有逻辑)
+            let addr = format!("{}:{}", config.host, config.port);
+            let mut handle = client::connect(ssh_config, &addr, ClientHandler)
+                .await
+                .context("SSH connect failed")?;
+            Self::authenticate(&mut handle, config, &hosts).await?;
             Ok(handle)
         }
 

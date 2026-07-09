@@ -38,6 +38,8 @@ pub struct HostConfig {
     pub password_env: Option<String>,
     #[serde(default)]
     pub os: Option<RemoteOs>,  // 可选，避免每次检测
+    #[serde(default)]
+    pub jump_host: Option<String>,  // v0.7.3: 跳板机 host alias (先 SSH 到此机, 再 direct-tcpip 到目标)
 }
 
 fn default_port() -> u16 { 22 }
