@@ -60,6 +60,8 @@ mod imp {
         host_name: String,
         host_config: HostConfig,
         os: RemoteOs,
+        has_rxt: Option<bool>,      // v0.7.5: None=未探测, Some(true)=远端有rxt, Some(false)=无
+        rxt_path: Option<String>,   // v0.7.5: 远端 rxt 可执行文件完整路径 (探测到后缓存)
     }
 
     impl RemoteChannel {
@@ -74,7 +76,11 @@ mod imp {
 
             let handle = rt.block_on(Self::connect_async(&config))?;
 
-            let mut ch = Self { rt, handle, host_name: host_alias.to_string(), host_config: config.clone(), os: RemoteOs::Linux };
+            let mut ch = Self {
+                rt, handle, host_name: host_alias.to_string(),
+                host_config: config.clone(), os: RemoteOs::Linux,
+                has_rxt: None, rxt_path: None,   // v0.7.5: 懒探测, 首次 try_exec_rxt 时才查
+            };
             ch.os = config.os.unwrap_or_else(|| ch.detect_os().unwrap_or(RemoteOs::Linux));
             Ok(ch)
         }
@@ -336,8 +342,67 @@ mod imp {
         pub fn exec_rxt(&self, args: &[&str]) -> anyhow::Result<String> {
             self.exec(&format!("rxt {}", args.join(" ")))
         }
-        pub fn check_rxt(&self) -> anyhow::Result<bool> {
-            match self.exec("which rxt") { Ok(_) => Ok(true), Err(_) => Ok(false) }
+
+        /// v0.7.5: 远端是否已装 rxt (探测结果已缓存)
+        pub fn has_rxt(&self) -> Option<bool> { self.has_rxt }
+
+        /// v0.7.5: 跨平台探测远端 rxt 可执行文件路径。
+        /// Linux: command -v rxt; Windows: Get-Command rxt → %USERPROFILE%\rxt.exe → C:\rxt\rxt.exe
+        /// 探测到则缓存到 rxt_path, 返回 Some(path); 未找到返回 None。
+        pub fn probe_rxt_path(&mut self) -> Option<String> {
+            let path = match self.os {
+                RemoteOs::Windows => {
+                    // PowerShell: 查 PATH → 用户目录 → C:\rxt (复用 version.rs 验证过的逻辑)
+                    use base64::Engine;
+                    let ps = "$r = Get-Command rxt -ErrorAction SilentlyContinue; \
+                              if (-not $r) { $r = Get-Item \"$env:USERPROFILE\\rxt.exe\" -ErrorAction SilentlyContinue }; \
+                              if (-not $r) { $r = Get-Item \"C:\\rxt\\rxt.exe\" -ErrorAction SilentlyContinue }; \
+                              if ($r) { $r.FullName } else { '' }";
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(
+                        ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
+                    );
+                    let out = self.exec(&format!("pwsh -NoProfile -EncodedCommand {}", b64)).unwrap_or_default();
+                    let trimmed = out.trim();
+                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                }
+                RemoteOs::Linux => {
+                    // command -v 比 which 更通用 (POSIX 内建); 输出 rxt 完整路径
+                    let out = self.exec("command -v rxt 2>/dev/null").unwrap_or_default();
+                    let trimmed = out.trim();
+                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                }
+            };
+            self.rxt_path = path.clone();
+            self.has_rxt = Some(path.is_some());
+            path
+        }
+
+        /// v0.7.5: 智能调远端 rxt — 有则用, 无则返回 None 让调用方降级。
+        /// 三态缓存: None=首次尝试(探测后定夺), Some(true)=直接调, Some(false)=直接降级。
+        /// "半路装上"场景: 重连即重新探测 (新实例 has_rxt 重置 None)。
+        pub fn try_exec_rxt(&mut self, args: &[&str]) -> Option<String> {
+            match self.has_rxt {
+                Some(false) => None,                    // 已知无 rxt, 直接降级
+                Some(true) => {                         // 已知有, 用缓存路径直接调
+                    let exe = self.rxt_path.as_deref().unwrap_or("rxt");
+                    self.exec(&format!("{} {}", exe, args.join(" "))).ok()
+                }
+                None => {                               // 未知, 首次探测
+                    if let Some(ref p) = self.probe_rxt_path() {
+                        self.exec(&format!("{} {}", p, args.join(" "))).ok()
+                    } else {
+                        None    // 探测确认无 rxt (has_rxt 已被 probe_rxt_path 设为 Some(false))
+                    }
+                }
+            }
+        }
+
+        /// v0.7.5: 显式探测远端是否有 rxt (向后兼容旧接口)
+        pub fn check_rxt(&mut self) -> anyhow::Result<bool> {
+            if self.has_rxt.is_none() {
+                self.probe_rxt_path();
+            }
+            Ok(self.has_rxt.unwrap_or(false))
         }
     }
 }
@@ -366,7 +431,10 @@ mod stub {
         pub fn write_file_with_mode(&self, _path: &Path, _content: &[u8], _mode: i32) -> anyhow::Result<()> { unreachable!() }
         pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> { unreachable!() }
         pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> { unreachable!() }
-        pub fn check_rxt(&self) -> anyhow::Result<bool> { unreachable!() }
+        pub fn check_rxt(&mut self) -> anyhow::Result<bool> { unreachable!() }
+        pub fn has_rxt(&self) -> Option<bool> { unreachable!() }
+        pub fn try_exec_rxt(&mut self, _args: &[&str]) -> Option<String> { unreachable!() }
+        pub fn probe_rxt_path(&mut self) -> Option<String> { unreachable!() }
         pub fn host_name(&self) -> &str { unreachable!() }
         pub fn host_config(&self) -> &crate::hosts::HostConfig { unreachable!() }
         pub fn remote_os(&self) -> crate::hosts::RemoteOs { unreachable!() }

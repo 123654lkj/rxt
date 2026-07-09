@@ -581,23 +581,23 @@ fn main() -> anyhow::Result<()> {
         let members = hosts_config.get_group_members(group_name)?;
         for member in &members {
             eprintln!("\n=== [{}] ===", member);
-            let rc = crate::remote::RemoteChannel::connect(member)?;
-            execute_command(cli.command.clone(), Some(&rc))?;
+            let mut rc = crate::remote::RemoteChannel::connect(member)?;
+            execute_command(cli.command.clone(), Some(&mut rc))?;
         }
         return Ok(());
     }
 
     // --host: 建立远程连接
-    let remote_channel = if let Some(ref host) = cli.host {
+    let mut remote_channel = if let Some(ref host) = cli.host {
         Some(crate::remote::RemoteChannel::connect(host)?)
     } else { None };
 
-    execute_command(cli.command, remote_channel.as_ref())?;
+    execute_command(cli.command, remote_channel.as_mut())?;
     Ok(())
 }
 
 /// v0.5.1: 统一命令分发 — 消灭 group/host 两套重复 dispatch
-fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteChannel>) -> anyhow::Result<()> {
     match cmd {
         Command::Replace { target, old, new, all, preview, content } => {
             let nc: Option<String> = if let Some(f) = new {
@@ -605,27 +605,27 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             } else if !content.is_empty() {
                 Some(content.join("\n"))
             } else { None };
-            replace::run(&target, &old, nc.as_deref(), all, preview, remote)?;
+            replace::run(&target, &old, nc.as_deref(), all, preview, remote.as_ref().map(|r| &**r))?;
         }
         Command::Read { path, encoding, number, head, tail, lines, budget, json } => {
-            read::run(&path, encoding, number, head, tail, lines, budget, json, remote)?;
+            read::run(&path, encoding, number, head, tail, lines, budget, json, remote.as_ref().map(|r| &**r))?;
         }
         Command::Write { path, content, append, file, b64, preserve, from } => {
             if let Some(f) = from {
                 let data = std::fs::read(&f)?;
-                write::run_bytes(&path, &data, append, preserve, remote)?;
+                write::run_bytes(&path, &data, append, preserve, remote.as_ref().map(|r| &**r))?;
             } else if let Some(f) = file {
-                write::run_file(&path, &f, append, remote)?;
+                write::run_file(&path, &f, append, remote.as_ref().map(|r| &**r))?;
             } else if b64 {
                 let j = content.join("");
-                write::run_b64(&path, &j, append, remote)?;
+                write::run_b64(&path, &j, append, remote.as_ref().map(|r| &**r))?;
             } else {
                 let j = content.join("\n");
-                write::run(&path, if content.is_empty() { None } else { Some(&j) }, append, preserve, remote)?;
+                write::run(&path, if content.is_empty() { None } else { Some(&j) }, append, preserve, remote.as_ref().map(|r| &**r))?;
             }
         }
         Command::Cat { path } => {
-            let storage = crate::storage::Storage::from_remote(remote);
+            let storage = crate::storage::Storage::from_remote(remote.as_ref().map(|r| &**r));
             if storage.is_remote() {
                 let (text, _) = storage.read_text(&path)?;
                 print!("{}", text);
@@ -634,9 +634,22 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             }
         }
         Command::Jsonl { path, last, json } => jsonl::run(&path, last, json)?,
-        Command::Stat { path, json } => stat::run(&path, json, remote)?,
+        Command::Stat { path, json } => {
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 远端有 rxt 时优先调原生 stat (格式统一)
+                let mut args: Vec<String> = vec!["stat".into(), path.to_string_lossy().into_owned()];
+                if json { args.push("--json".into()); }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+                return stat::run(&path, json, Some(&**rc));
+            }
+            stat::run(&path, json, None)?;
+        }
         Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex, json, max_results, head, offset } => {
-            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote)?;
+            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote.as_ref().map(|r| &**r))?;
         }
         Command::Struct { path, functions, types, deep, extract, json } => {
             struct_mod::run(&path, functions, types, deep, extract.as_deref(), json)?;
@@ -646,10 +659,31 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
         }
         Command::Dep { target, tree, json, check } => dep::run(&target, tree, json, check)?,
         Command::Sed { path, pattern, replacement, preview, line, regex } => {
-            sed::run(&path, &pattern, &replacement, preview, line, regex, remote)?;
+            sed::run(&path, &pattern, &replacement, preview, line, regex, remote.as_ref().map(|r| &**r))?;
         }
         Command::Grep { pattern, path, context, file_type, count, invert, json, regex, max_results, head, offset, jsonl, no_ignore } => {
-            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, remote)?;
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 远端有 rxt 时优先调原生 grep (rayon 并行, 行为一致, 无版本差异)
+                let mut args: Vec<String> = vec!["grep".into(), pattern.clone(), path.to_string_lossy().into_owned()];
+                args.push("--context".into()); args.push(context.to_string());
+                if let Some(t) = &file_type { args.push("--type".into()); args.push(t.clone()); }
+                if count { args.push("--count".into()); }
+                if invert { args.push("--invert".into()); }
+                if json { args.push("--json".into()); }
+                if regex { args.push("--regex".into()); }
+                if let Some(m) = max_results { args.push("--max-results".into()); args.push(m.to_string()); }
+                if let Some(h) = head { args.push("--head".into()); args.push(h.to_string()); }
+                args.push("--offset".into()); args.push(offset.to_string());
+                if jsonl { args.push("--jsonl".into()); }
+                if no_ignore { args.push("--no-ignore".into()); }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+                return grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, Some(&**rc));
+            }
+            grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, None)?;
         }
         Command::Patch { paths, reverse, check, output } => {
             patch::run(&paths, reverse, check, output.as_deref())?;
@@ -664,11 +698,43 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             let ignores: Vec<String> = ignore.as_deref()
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_default();
-            tree::run(&path, depth, &ignores, dirs_only, json, remote)?;
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 远端有 rxt 时优先调原生实现 (纯Rust, 不依赖远端有 tree 命令)
+                let mut args: Vec<String> = vec!["tree".into(), path.to_string_lossy().into_owned()];
+                if let Some(d) = depth { args.push("--depth".into()); args.push(d.to_string()); }
+                if !ignores.is_empty() { args.push("--ignore".into()); args.push(ignores.join(",")); }
+                if dirs_only { args.push("--dirs-only".into()); }
+                if json { args.push("--json".into()); }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+                return tree::run(&path, depth, &ignores, dirs_only, json, Some(&**rc));
+            }
+            tree::run(&path, depth, &ignores, dirs_only, json, None)?;
         }
         Command::Jq { query, file, fmt, compact, raw, slurp } => jq::run(query.as_deref(), file.as_deref(), fmt, compact, raw, slurp)?,
         Command::Unzip { archive, target, list_only, json, strip } => unzip::run(&archive, target.as_deref(), list_only, json, strip)?,
-        Command::Ls { dir, json, all, sort, depth, max } => ls::run(&dir, json, all, sort.as_deref(), depth, max, remote)?,
+        Command::Ls { dir, json, all, sort, depth, max } => {
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 远端有 rxt 时优先调远端原生实现 (输出统一, 无 GBK/编码问题)
+                let mut args: Vec<String> = vec!["ls".into(), dir.to_string_lossy().into_owned()];
+                if json { args.push("--json".into()); }
+                if all { args.push("--all".into()); }
+                if let Some(s) = &sort { args.push("--sort".into()); args.push(s.clone()); }
+                if let Some(d) = depth { args.push("--depth".into()); args.push(d.to_string()); }
+                if let Some(m) = max { args.push("--max".into()); args.push(m.to_string()); }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+                // 降级: 远端无 rxt, 走原 shell 模式
+                return ls::run(&dir, json, all, sort.as_deref(), depth, max, Some(&**rc));
+            }
+            ls::run(&dir, json, all, sort.as_deref(), depth, max, None)?
+        }
         Command::Http { method, url, headers, data, json_body, auth, timeout: _, show_headers, body_only } => http::run(&method, &url, &headers, data.as_deref(), json_body, auth.as_deref(), show_headers, body_only)?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
@@ -676,11 +742,11 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
                 Some((p.next()?, p.next()?))
             });
             if let Some(sp) = script {
-                edit::run_script(&path, &sp, preview, remote)?;
+                edit::run_script(&path, &sp, preview, remote.as_ref().map(|r| &**r))?;
             } else if let Some(lr) = line_range {
-                edit::run_line_range(&path, lr.as_str(), &content, preview, remote)?;
+                edit::run_line_range(&path, lr.as_str(), &content, preview, remote.as_ref().map(|r| &**r))?;
             } else {
-                edit::run(&path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, &content, preview, regex, remote)?;
+                edit::run(&path, after.as_deref(), before.as_deref(), delete.as_deref(), rep, &content, preview, regex, remote.as_ref().map(|r| &**r))?;
             }
         }
         Command::Hash { path, algo, text } => hash::run(path.as_deref(), &algo, text.as_deref())?,
@@ -700,7 +766,7 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
         Command::Time { cmd } => timecmd::run(&cmd)?,
         Command::Exec { code, b64, lang, write, file, login, json, container, db, sql_user } => {
             let cs = if let Some(f) = file { std::fs::read_to_string(f)? } else { code.unwrap_or_default() };
-            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote, login, json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
+            exec::run(&cs, b64, lang.as_deref(), write.as_ref(), remote.as_ref().map(|r| &**r), login, json, container.as_deref(), db.as_deref(), sql_user.as_deref())?;
         }
         Command::Sort { input, reverse, numeric, column, separator, unique } => {
             sort::run(input.as_deref(), reverse, numeric, column, separator, unique)?;
@@ -725,18 +791,18 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             clean::run(dir.as_deref(), target.as_deref(), profile.as_deref(), dry_run, all)?;
         }
         Command::Ctx { path, max_lines, json } => {
-            ctx::run(&path, max_lines, json, remote)?;
+            ctx::run(&path, max_lines, json, remote.as_ref().map(|r| &**r))?;
         }
         Command::Normalize { path, ending, remove_bom, json } => {
             normalize::run(&path, ending.as_deref(), remove_bom, json)?;
         }
         Command::Info { json } => {
-            if let Some(ref rc) = remote {
-                // 远程 info: 显示远端 rxt 信息
-                let cmd = "rxt info";
-                match rc.exec(cmd) {
-                    Ok(out) => println!("{}", out.trim_end()),
-                    Err(_) => println!("远端未安装 rxt"),
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 优先调远端 rxt info; 无 rxt 则降级提示
+                if let Some(out) = rc.try_exec_rxt(&["info"]) {
+                    print!("{}", out);
+                } else {
+                    println!("远端未安装 rxt, 无法获取 info (本地版: rxt info)");
                 }
             } else {
                 info::run(json)?;
@@ -757,27 +823,45 @@ fn execute_command(cmd: Command, remote: Option<&crate::remote::RemoteChannel>) 
             refs::run(&symbol, p, callers, callees, json)?;
         }
         Command::Sysinfo { section, json } => {
-            if let Some(ref rc) = remote {
-                // 远程: 尝试 exec_rxt,失败则提示远端需装 rxt
-                match rc.exec_rxt(&["sysinfo"]) {
-                    Ok(out) => print!("{}", out),
-                    Err(_) => println!("远端未安装 rxt,无法获取系统信息 (请用 rxt install --host {} 安装)", rc.host_name()),
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 优先调远端 rxt sysinfo; 无 rxt 则降级提示
+                let sec = section.as_deref().unwrap_or("all");
+                if let Some(out) = rc.try_exec_rxt(&["sysinfo", sec]) {
+                    print!("{}", out);
+                } else {
+                    println!("远端未安装 rxt, 无法获取系统信息");
                 }
             } else {
                 sysinfo::run(section.as_deref().unwrap_or("all"), json)?;
             }
         }
         Command::Ps { name, kill, top, sort, tree, json } => {
-            ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, remote)?;
+            if let Some(ref mut rc) = remote {
+                // v0.7.5: 远端有 rxt 时优先调原生实现
+                let mut args: Vec<String> = vec!["ps".into()];
+                if let Some(n) = &name { args.push("--name".into()); args.push(n.clone()); }
+                if let Some(k) = &kill { args.push("--kill".into()); args.push(k.clone()); }
+                args.push("--top".into()); args.push(top.to_string());
+                args.push("--sort".into()); args.push(sort.clone());
+                if tree { args.push("--tree".into()); }
+                if json { args.push("--json".into()); }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+                return ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, Some(&**rc));
+            }
+            ps::run(name.as_deref(), kill.as_deref(), top, sort.as_str(), tree, json, None)?;
         }
         Command::Service { name, start, stop, running, json } => {
-            service::run(name.as_deref(), start.as_deref(), stop.as_deref(), running, json, remote)?;
+            service::run(name.as_deref(), start.as_deref(), stop.as_deref(), running, json, remote.as_ref().map(|r| &**r))?;
         }
         Command::Reg { get, set, delete, value_name, value, list, json } => {
-            reg::run(get.as_deref(), set.as_deref(), delete.as_deref(), value_name.as_deref(), value.as_deref(), list.as_deref(), json, remote)?;
+            reg::run(get.as_deref(), set.as_deref(), delete.as_deref(), value_name.as_deref(), value.as_deref(), list.as_deref(), json, remote.as_ref().map(|r| &**r))?;
         }
         Command::Net { conn, resolve, route, port, json } => {
-            net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json, remote)?;
+            net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json, remote.as_ref().map(|r| &**r))?;
         }
         Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;

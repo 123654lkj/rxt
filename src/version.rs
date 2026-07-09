@@ -31,30 +31,19 @@ pub fn run_remote(target: &str, is_group: bool) -> anyhow::Result<()> {
 
     for host_name in &target_hosts {
         match RemoteChannel::connect(host_name) {
-            Ok(remote) => {
-                let ver_cmd = match remote.remote_os() {
-                crate::hosts::RemoteOs::Windows => {
-                    use base64::Engine;
-                    // v0.7.3: 不再硬编码 C:\rxt\rxt.exe, 先查 PATH 再回退常见位置
-                    let ps = "$r = Get-Command rxt -ErrorAction SilentlyContinue; if (-not $r) { $r = Get-Item \"$env:USERPROFILE\\rxt.exe\" -ErrorAction SilentlyContinue }; if (-not $r) { $r = Get-Item \"C:\\rxt\\rxt.exe\" -ErrorAction SilentlyContinue }; if ($r) { & $r.FullName --version } else { \"NOT_FOUND\" }";
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(
-                        ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
-                    );
-                    format!("pwsh -NoProfile -EncodedCommand {}", b64)
-                }
-                _ => "rxt --version 2>/dev/null".to_string(),
-            };
-            match remote.exec(&ver_cmd) {
-                    Ok(out) => {
-                        let ver = out.trim().lines().next().unwrap_or("?").to_string();
-                        println!("  {:<10} {}", host_name, ver);
-                        versions.push((host_name.clone(), ver));
+            Ok(mut remote) => {
+                // v0.7.5: 复用 remote.probe_rxt_path() 跨平台探测, 消除重复的 PowerShell 逻辑
+                let ver = match remote.probe_rxt_path() {
+                    Some(path) => {
+                        match remote.exec(&format!("{} --version", path)) {
+                            Ok(out) => out.trim().lines().next().unwrap_or("?").to_string(),
+                            Err(_) => "ERROR".to_string(),
+                        }
                     }
-                    Err(e) => {
-                        println!("  {:<10} ❌ {}", host_name, e);
-                        versions.push((host_name.clone(), "ERROR".to_string()));
-                    }
-                }
+                    None => "?".to_string(),  // 远端无 rxt
+                };
+                println!("  {:<10} {}", host_name, ver);
+                versions.push((host_name.clone(), ver));
             }
             Err(e) => {
                 println!("  {:<10} ❌ 连接失败: {}", host_name, e);

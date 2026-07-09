@@ -338,6 +338,17 @@ rxt
 
 无 `jump_host` 配置时走原直连逻辑，行为完全不变。
 
+### 🔄 远端 rxt 感知（v0.7.5+）
+
+当远端也安装了 rxt 时，`ls` / `ps` / `tree` / `grep` / `stat` / `sysinfo` / `info` 等命令会**自动优先调用远端 rxt 的原生实现**，而非 SSH 跑 shell 命令再解析文本：
+
+- **输出统一**：跨 Linux/Windows 格式一致（`ls` 都是表格、`ps` 都是 `PID CPU% MEM` 格式）
+- **无编码问题**：Windows 远程不再有 GBK 乱码（原生 Rust 直接输出 UTF-8）
+- **无依赖**：`tree` / `grep` 不依赖远端系统工具的版本和行为差异
+- **自动降级**：远端没装 rxt 时静默回退到 shell 模式，用户无感
+
+探测采用三态缓存（`None`→首次尝试→`Some(true/false)`），首次成功后不再重复探测；"半路装上 rxt"只需重连一次即自动刷新。
+
 ### Windows 编码处理
 
 Windows SSH 默认输出 GBK 编码，rxt 自动处理：
@@ -378,6 +389,14 @@ cargo build --release --no-default-features
 ---
 
 ## 📖 版本历史
+
+### v0.7.5 (2026-07-10)
+
+- **🆕 远端 rxt 感知（exec_rxt 自动降级）**：连接远程主机时，自动探测远端是否安装了 rxt。有则优先调远端 `rxt` 原生实现（输出统一、无 GBK/编码问题、行为一致），无则静默降级到原有 shell 模式，用户无感
+  - `remote.rs`: 新增 `probe_rxt_path()`（跨平台探测：Linux `command -v` / Windows `Get-Command`+多路径回退）+ `try_exec_rxt()`（三态缓存 `has_rxt: Option<bool>`，首次探测后缓存，"半路装上"重连即刷新）
+  - `main.rs`: `sysinfo` / `info` / `ls` / `ps` / `tree` / `grep` / `stat` 7 个命令改造，远端有 rxt 时走原生实现
+  - `version.rs`: 复用 `probe_rxt_path()`，消除重复的 PowerShell 探测逻辑
+  - **收益**：Windows 远程不再有 GBK 乱码、输出格式跨平台统一、复杂命令（grep/tree）不依赖远端系统工具版本
 
 ### v0.7.3 (2026-07-09)
 
