@@ -327,6 +327,13 @@ enum Command {
         #[arg(long, help = "默认当前目录")] path: Option<PathBuf>,
         #[arg(long)] json: bool,
     },
+    #[command(about = "一键发布 — 编译两平台 + 装本地 + 部署远程 + git push")]
+    Publish {
+        #[arg(long, help = "仓库路径(默认自动探测)")] repo: Option<String>,
+        #[arg(long, help = "不部署远程机器")] no_deploy: bool,
+        #[arg(long, help = "不 git push")] no_push: bool,
+        #[arg(short, long, help = "commit message")] message: Option<String>,
+    },
     // ===== 系统命令族 (v0.4.0+) — 对标 PowerShell =====
     #[command(about = "系统信息 - OS/CPU/内存/磁盘/网络 (all|os|cpu|mem|disk|net)")]
     Sysinfo {
@@ -544,6 +551,7 @@ mod churn;
 mod dead;
 mod trace;
 mod impact;
+mod publish;
 mod langs;
 mod langparse;
 // 系统命令族 (v0.4.0+) — 对标 PowerShell
@@ -869,6 +877,9 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Impact { files, diff, path, json } => {
             let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
             impact::run(&files, diff, p, json)?;
+        }
+        Command::Publish { repo, no_deploy, no_push, message } => {
+            publish::run(repo.as_deref(), no_deploy, no_push, message.as_deref())?;
         }
         Command::Sysinfo { section, json } => {
             if let Some(ref mut rc) = remote {

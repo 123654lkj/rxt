@@ -143,7 +143,9 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
     let lines = code_lines(content, "//", "/*", "*/");
     for (ln, line) in &lines {
         let t = line.trim();
-        let (kw, kind) = if t.starts_with("pub fn ") || t.starts_with("fn ") {
+        let (kw, kind) = if t.starts_with("pub async fn ") || t.starts_with("async fn ") {
+            ("fn", "fn")  // v0.8.1: 支持 async fn, kind 仍为 "fn" (callgraph 按 callable kind 过滤)
+        } else if t.starts_with("pub fn ") || t.starts_with("fn ") {
             ("fn", "fn")
         } else if t.starts_with("pub struct ") || t.starts_with("struct ") {
             ("struct", "struct")
@@ -167,8 +169,12 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
         let name = if kind == "impl" {
             first_ident_after(&sig, "impl")
         } else {
-            let kw_full = if t.starts_with("pub ") {
+            let kw_full = if t.starts_with("pub async ") {
+                format!("pub async {}", kw)
+            } else if t.starts_with("pub ") {
                 format!("pub {}", kw)
+            } else if t.starts_with("async ") {
+                format!("async {}", kw)
             } else {
                 kw.to_string()
             };
