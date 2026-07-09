@@ -20,7 +20,7 @@ pub struct FileChange {
     pub deletions: usize,
 }
 
-fn git(args: &[&str]) -> anyhow::Result<String> {
+pub fn git(args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("git").args(args).output()?;
     if !out.status.success() {
         anyhow::bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));

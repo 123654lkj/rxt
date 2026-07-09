@@ -300,6 +300,33 @@ enum Command {
         #[arg(long, help = "symbol 调用了谁(列出其函数体内的调用)")] callees: bool,
         #[arg(long)] json: bool,
     },
+    // ===== v0.8.0 代码智能四件套 =====
+    #[command(about = "git 历史热点 — 哪些文件改得最频繁(最易碎)")]
+    Churn {
+        #[arg(long, help = "时间范围 (如 '1 month', '2 weeks')")] since: Option<String>,
+        #[arg(long, help = "按作者分组")] by_author: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "死代码检测 — 从入口做可达性分析, 找出不可达函数")]
+    Dead {
+        #[arg(long, help = "默认当前目录")] path: Option<PathBuf>,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "多跳调用链追踪 — refs 是单跳, trace 是 N 跳全图")]
+    Trace {
+        symbol: String,
+        #[arg(long, help = "默认当前目录")] path: Option<PathBuf>,
+        #[arg(short, long, default_value_t = 3, help = "追踪深度(跳数)")] depth: usize,
+        #[arg(long, help = "向上追踪(谁调用了它), 默认向下(它调用了谁)")] up: bool,
+        #[arg(long)] json: bool,
+    },
+    #[command(about = "改动爆炸半径 — 给定改动文件, 算出受影响的调用者链")]
+    Impact {
+        #[arg(num_args = 0..)] files: Vec<PathBuf>,
+        #[arg(long, help = "自动取 git diff 改动的文件")] diff: bool,
+        #[arg(long, help = "默认当前目录")] path: Option<PathBuf>,
+        #[arg(long)] json: bool,
+    },
     // ===== 系统命令族 (v0.4.0+) — 对标 PowerShell =====
     #[command(about = "系统信息 - OS/CPU/内存/磁盘/网络 (all|os|cpu|mem|disk|net)")]
     Sysinfo {
@@ -512,6 +539,11 @@ mod storage;
 mod map;
 mod digest;
 mod refs;
+mod callgraph;
+mod churn;
+mod dead;
+mod trace;
+mod impact;
 mod langs;
 mod langparse;
 // 系统命令族 (v0.4.0+) — 对标 PowerShell
@@ -821,6 +853,22 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Refs { symbol, path, callers, callees, json } => {
             let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
             refs::run(&symbol, p, callers, callees, json)?;
+        }
+        // v0.8.0 代码智能四件套
+        Command::Churn { since, by_author, json } => {
+            churn::run(since.as_deref(), by_author, json)?;
+        }
+        Command::Dead { path, json } => {
+            let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            dead::run(p, json)?;
+        }
+        Command::Trace { symbol, path, depth, up, json } => {
+            let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            trace::run(&symbol, p, depth, up, json)?;
+        }
+        Command::Impact { files, diff, path, json } => {
+            let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            impact::run(&files, diff, p, json)?;
         }
         Command::Sysinfo { section, json } => {
             if let Some(ref mut rc) = remote {

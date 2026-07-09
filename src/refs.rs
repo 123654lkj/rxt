@@ -368,3 +368,37 @@ fn print_text(refs: &[Ref], symbol: &str) {
         }
     }
 }
+
+/// v0.8.0: 从函数体文本中提取所有调用 (供 callgraph 模块复用).
+/// 返回 (被调用的符号名, 行号 1-indexed) 列表.
+/// 排除控制流(if/for/while)、定义关键字(fn/struct)、属性访问(.method).
+pub fn extract_calls_from_body(lines: &[&str], start_idx: usize, end_idx: usize) -> Vec<(String, usize)> {
+    let call_re = match Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(") {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let exclude = [
+        "if", "for", "while", "match", "switch", "catch", "return", "print", "println",
+        "eprintln", "eprint", "format", "vec", "Some", "Ok", "Err", "None", "assert",
+    ];
+    let def_keywords = [
+        "fn", "def", "function", "func", "struct", "class", "interface", "enum",
+        "trait", "type", "const", "let", "var", "async", "pub",
+    ];
+
+    let mut calls = Vec::new();
+    for i in start_idx..end_idx.min(lines.len()) {
+        let line = lines[i];
+        let line_num = i + 1;
+        for cap in call_re.captures_iter(line) {
+            let name = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+            if name.is_empty() { continue; }
+            if exclude.contains(&name) || def_keywords.contains(&name) { continue; }
+            // 排除属性访问 .name(
+            let m_start = cap.get(1).map(|m| m.start()).unwrap_or(0);
+            if m_start > 0 && line[..m_start].ends_with('.') { continue; }
+            calls.push((name.to_string(), line_num));
+        }
+    }
+    calls
+}

@@ -252,6 +252,10 @@ rxt mcp --sse    # SSE 模式
 | `http` | HTTP 客户端 |
 | `digest` | 目录符号骨架（省 token） |
 | `refs` | 双向调用链（`--callers`/`--callees`） |
+| `trace` | 多跳调用链追踪（N 跳传递闭包，`--depth`/`--up`） |
+| `dead` | 死代码检测（从入口做可达性分析，找出不可达函数） |
+| `impact` | 改动爆炸半径（给定改动文件，算受影响的调用者链） |
+| `churn` | git 历史热点（哪些文件改得最频繁 = 最易碎） |
 | `struct` | 代码结构分析 |
 | `dep` | 依赖分析 |
 | `ctx` | AI 上下文生成器 |
@@ -389,6 +393,17 @@ cargo build --release --no-default-features
 ---
 
 ## 📖 版本历史
+
+### v0.8.0 (2026-07-10)
+
+- **🆕 代码智能四件套** — 新增 4 个代码分析命令，基于共享调用图引擎：
+  - **`rxt churn`** — git 历史热点分析：统计每个文件的提交次数/增删行数，高 churn = 高风险标 🔥。支持 `--since`/`--by-author`
+  - **`rxt dead`** — 死代码检测：构建全库调用图，从入口（main/pub/export/tests）做可达性分析，列出不可达函数
+  - **`rxt trace`** — 多跳调用链追踪：给定符号输出 N 跳调用链树（`refs` 是单跳，`trace` 是传递闭包）。支持 `--depth`/`--up`
+  - **`rxt impact`** — 改动爆炸半径：给定改动文件，反向传播算出受影响的调用者链（`--diff` 自动取 git diff）
+- **新增 `callgraph.rs` 模块**：全库调用图引擎（符号节点 + 调用边 + 入口标记），dead/trace/impact 共享
+- **refs.rs**：抽取 `extract_calls_from_body()` 公共函数供 callgraph 复用
+- 灵感来源：codeseek（调用图）、codebase-memory-mcp（死代码/影响分析）、graphcode（churn 热点）、loop-engineering（impact 分析）
 
 ### v0.7.5 (2026-07-10)
 
