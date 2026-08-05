@@ -1,10 +1,11 @@
 //! deploy — 一键部署二进制到远程机器
-//! 用系统 scp 传输大文件(比 exec+base64 可靠), rxt exec 只做 kill/验证
+//! v0.8.7: Windows 优先原生 OpenSSH（ssh/scp），不再依赖 bash+sshpass；
+//!         Linux 仍可用 sshpass，也可走本机 OpenSSH 密钥/ssh config。
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use base64::Engine;
-use crate::hosts::{HostsFile, RemoteOs};
+use crate::hosts::HostsFile;
 
 pub fn run(
     binary: &PathBuf,
@@ -36,8 +37,14 @@ pub fn run(
     for host_name in &target_hosts {
         print!("\n  [{}] ", host_name);
         match deploy_to_host(binary, local_size, host_name, remote_path, &hosts) {
-            Ok(rp) => { println!("✅ -> {}", rp); ok.push(host_name.clone()); }
-            Err(e) => { println!("❌ {}", e); fail.push((host_name.clone(), e.to_string())); }
+            Ok(rp) => {
+                println!("✅ -> {}", rp);
+                ok.push(host_name.clone());
+            }
+            Err(e) => {
+                println!("❌ {}", e);
+                fail.push((host_name.clone(), e.to_string()));
+            }
         }
     }
 
@@ -45,10 +52,61 @@ pub fn run(
     println!("✅ 成功: {} 台 ({})", ok.len(), ok.join(", "));
     if !fail.is_empty() {
         println!("❌ 失败: {} 台", fail.len());
-        for (h, e) in &fail { println!("   {}: {}", h, e); }
+        for (h, e) in &fail {
+            println!("   {}: {}", h, e);
+        }
+        anyhow::bail!("{} 台部署失败", fail.len());
     }
-    if !fail.is_empty() { anyhow::bail!("{} 台部署失败", fail.len()); }
     Ok(())
+}
+
+/// 是否更像用「主机别名」走 OpenSSH config（Win/本机 ssh huhu 可用）
+fn prefer_ssh_alias() -> bool {
+    // Windows 上 OpenSSH 常见；有 ssh 且无 bash 时必须走原生
+    which("ssh").is_some() && (cfg!(windows) || which("sshpass").is_none())
+}
+
+fn which(cmd: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let p = dir.join(cmd);
+        if p.is_file() {
+            return Some(p);
+        }
+        #[cfg(windows)]
+        {
+            let p_exe = dir.join(format!("{}.exe", cmd));
+            if p_exe.is_file() {
+                return Some(p_exe);
+            }
+        }
+    }
+    None
+}
+
+fn run_cmd(mut c: Command) -> anyhow::Result<Output> {
+    c.output()
+        .map_err(|e| anyhow::anyhow!("执行失败: {} — 请确认已装 OpenSSH Client", e))
+}
+
+fn ssh_base_args() -> Vec<String> {
+    vec![
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=15".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+    ]
+}
+
+/// 原生 OpenSSH：优先主机别名（读 ~/.ssh/config），否则 user@host
+fn ssh_target(host_alias: &str, user: &str, host: &str, use_alias: bool) -> String {
+    if use_alias {
+        host_alias.to_string()
+    } else {
+        format!("{}@{}", user, host)
+    }
 }
 
 fn deploy_to_host(
@@ -60,98 +118,210 @@ fn deploy_to_host(
 ) -> anyhow::Result<String> {
     let config = hosts.get_host(host_name)?.clone();
     let password = hosts.get_password(&config).unwrap_or_default();
+    let use_native = prefer_ssh_alias();
+    let target = ssh_target(host_name, &config.user, &config.host, use_native);
 
-    // 探测远端 OS (用 sshpass + 一条命令)
-    let os_probe = format!("sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} 'uname -s 2>/dev/null || echo WIN'", config.user, config.host);
-    let probe_out = Command::new("bash").arg("-c").arg(&os_probe).env("SSHPASS", &password).output()?;
-    let is_windows = !String::from_utf8_lossy(&probe_out.stdout).to_lowercase().contains("linux");
+    // 探测远端 OS
+    let uname = if use_native {
+        let mut c = Command::new("ssh");
+        for a in ssh_base_args() {
+            c.arg(a);
+        }
+        c.arg(&target).arg("uname -s 2>/dev/null || echo WIN");
+        let out = run_cmd(c)?;
+        String::from_utf8_lossy(&out.stdout).to_string()
+    } else {
+        let os_probe = format!(
+            "sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} 'uname -s 2>/dev/null || echo WIN'",
+            config.user, config.host
+        );
+        let probe_out = Command::new("bash")
+            .arg("-c")
+            .arg(&os_probe)
+            .env("SSHPASS", &password)
+            .output()?;
+        String::from_utf8_lossy(&probe_out.stdout).to_string()
+    };
+    let is_windows = !uname.to_lowercase().contains("linux");
 
-    // v0.4.2: 交叉平台检查 - 本地二进制格式必须匹配目标 OS
-    let local_bytes_head = std::fs::read(binary).map_err(|e| anyhow::anyhow!("读本地文件: {}", e))?;
-    let is_local_pe = local_bytes_head.len() >= 2 && &local_bytes_head[..2] == b"MZ"; // Windows PE
-    let is_local_elf = local_bytes_head.len() >= 4 && &local_bytes_head[..4] == b"\x7fELF"; // Linux ELF
+    // 交叉平台检查
+    let local_bytes_head =
+        std::fs::read(binary).map_err(|e| anyhow::anyhow!("读本地文件: {}", e))?;
+    let is_local_pe = local_bytes_head.len() >= 2 && &local_bytes_head[..2] == b"MZ";
+    let is_local_elf = local_bytes_head.len() >= 4 && &local_bytes_head[..4] == b"\x7fELF";
     if is_windows && !is_local_pe {
-        anyhow::bail!("⚠️  跳过: 本地是 {} 二进制, 目标 {} 是 Windows, 需要 PE/exe 格式",
-            if is_local_elf { "Linux ELF" } else { "未知" }, host_name);
+        anyhow::bail!(
+            "跳过: 本地是 {} 二进制, 目标 {} 是 Windows, 需要 PE/exe",
+            if is_local_elf { "Linux ELF" } else { "未知" },
+            host_name
+        );
     }
     if !is_windows && !is_local_elf {
-        anyhow::bail!("⚠️  跳过: 本地是 {} 二进制, 目标 {} 是 Linux, 需要 ELF 格式",
-            if is_local_pe { "Windows PE" } else { "未知" }, host_name);
+        anyhow::bail!(
+            "跳过: 本地是 {} 二进制, 目标 {} 是 Linux, 需要 ELF",
+            if is_local_pe { "Windows PE" } else { "未知" },
+            host_name
+        );
     }
 
-    // 确定远程路径
     let rp = remote_path.map(|p| p.to_string()).unwrap_or_else(|| {
-        if is_windows { "C:\\rxt\\rxt.exe".to_string() }
-        else {
-            if String::from_utf8_lossy(&probe_out.stdout).contains("linux") {
-                "/usr/local/bin/rxt".to_string()
-            } else {
-                "/usr/local/bin/rxt".to_string()
-            }
+        if is_windows {
+            r"C:\rxt\rxt.exe".to_string()
+        } else {
+            "/usr/local/bin/rxt".to_string()
         }
     });
 
-    // Windows: 先 kill 占用进程
     if is_windows {
-        let exe_name = std::path::Path::new(&rp)
-            .file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("rxt".into());
-        let kill_cmd = format!(
-            "sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -Command \"Stop-Process -Name {} -Force -ErrorAction SilentlyContinue\"'",
-            config.user, config.host, exe_name
+        let exe_name = Path::new(&rp)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "rxt".into());
+        let kill = format!(
+            r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Stop-Process -Name {} -Force -ErrorAction SilentlyContinue""#,
+            exe_name
         );
-        let _ = Command::new("bash").arg("-c").arg(&kill_cmd).output();
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        let _ = ssh_run(use_native, &target, &config, &password, &kill);
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
-    // SCP 传输
     if !is_windows {
-        // Linux: scp 到 /tmp 再 sudo mv (解决 /usr/local/bin 权限)
         let tmp_remote = "/tmp/_rxt_deploy_tmp";
-        let scp = format!("sshpass -e scp -o StrictHostKeyChecking=no {} {}@{}:{}",
-            binary.display(), config.user, config.host, tmp_remote);
-        let scp_result = Command::new("bash").arg("-c").arg(&scp).env("SSHPASS", &password).output()?;
-        if !scp_result.status.success() {
-            let err = String::from_utf8_lossy(&scp_result.stderr);
-            anyhow::bail!("scp 失败: {}", err.trim());
-        }
-        // sudo mv + chmod
-        let mv = format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'echo {} | sudo -S mv {} {} && sudo chmod 755 {}'",
-            config.user, config.host, password, tmp_remote, rp, rp);
-        let mv_result = Command::new("bash").arg("-c").arg(&mv).env("SSHPASS", &password).output()?;
-        if !mv_result.status.success() {
-            // sudo 可能没装或没权限, 尝试直接 mv
-            let mv2 = format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'mv {} {} 2>/dev/null || cp {} {}'",
-                config.user, config.host, tmp_remote, rp, tmp_remote, rp);
-            let _ = Command::new("bash").arg("-c").arg(&mv2).output();
+        scp_to(
+            use_native,
+            binary,
+            &target,
+            &config,
+            &password,
+            tmp_remote,
+        )?;
+        // 优先 sudo 装系统路径，失败则装到用户目录并尽量 cp
+        let install = format!(
+            "chmod +x {tmp} && (sudo mv {tmp} {rp} 2>/dev/null || sudo cp {tmp} {rp} 2>/dev/null || (mkdir -p \"$HOME/.local/bin\" && cp {tmp} \"$HOME/.local/bin/rxt\" && chmod 755 \"$HOME/.local/bin/rxt\"; cp {tmp} {rp} 2>/dev/null || true)) && (sudo chmod 755 {rp} 2>/dev/null || chmod 755 {rp} 2>/dev/null || true); test -x {rp} || test -x \"$HOME/.local/bin/rxt\"",
+            tmp = tmp_remote,
+            rp = rp
+        );
+        let out = ssh_run(use_native, &target, &config, &password, &install)?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!("远端安装失败: {}", err.trim());
         }
     } else {
-        // Windows: 直接 scp (已 kill 进程)
-        let scp_target = format!("{}@{}:{}", config.user, config.host, rp.replace('\\', "/"));
-        let scp = format!("sshpass -e scp -o StrictHostKeyChecking=no {} {}",
-            binary.display(), scp_target);
-        let scp_result = Command::new("bash").arg("-c").arg(&scp).env("SSHPASS", &password).output()?;
-        if !scp_result.status.success() {
-            let err = String::from_utf8_lossy(&scp_result.stderr);
-            anyhow::bail!("scp 失败: {}", err.trim());
-        }
+        let scp_target_path = rp.replace('\\', "/");
+        scp_to(
+            use_native,
+            binary,
+            &target,
+            &config,
+            &password,
+            &scp_target_path,
+        )?;
     }
 
-    // 验证字节大小
-    let verify = if is_windows {
-        // 用 EncodedCommand 避免 pwsh 引号转义地狱
+    // 验证大小
+    let verify_cmd = if is_windows {
         let ps_script = format!("(Get-Item '{}').Length", rp);
-        let b64 = base64::engine::general_purpose::STANDARD.encode(ps_script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
-        format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'pwsh -NoProfile -EncodedCommand {}'",
-            config.user, config.host, b64)
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            ps_script
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        );
+        format!(r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -EncodedCommand {}"#, b64)
     } else {
-        format!("sshpass -e ssh -o StrictHostKeyChecking=no {}@{} 'stat -c %s \"{}\"'",
-            config.user, config.host, rp)
+        format!(
+            "stat -c %s '{}' 2>/dev/null || stat -c %s \"$HOME/.local/bin/rxt\"",
+            rp
+        )
     };
-    let v_result = Command::new("bash").arg("-c").arg(&verify).env("SSHPASS", &password).output()?;
-    let actual: u64 = String::from_utf8_lossy(&v_result.stdout).trim().parse().unwrap_or(0);
+    let v_out = ssh_run(use_native, &target, &config, &password, &verify_cmd)?;
+    let actual: u64 = String::from_utf8_lossy(&v_out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
     if actual != local_size {
         anyhow::bail!("字节不一致: 本地 {} / 远程 {}", local_size, actual);
     }
 
     Ok(rp)
+}
+
+fn scp_to(
+    use_native: bool,
+    local: &Path,
+    target: &str,
+    config: &crate::hosts::HostConfig,
+    password: &str,
+    remote_path: &str,
+) -> anyhow::Result<()> {
+    if use_native {
+        let dest = format!("{}:{}", target, remote_path);
+        let mut c = Command::new("scp");
+        for a in ssh_base_args() {
+            c.arg(a);
+        }
+        c.arg(local).arg(&dest);
+        let out = run_cmd(c)?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "scp 失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    } else {
+        let scp = format!(
+            "sshpass -e scp -o StrictHostKeyChecking=no {} {}@{}:{}",
+            local.display(),
+            config.user,
+            config.host,
+            remote_path
+        );
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(&scp)
+            .env("SSHPASS", password)
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "scp 失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+}
+
+fn ssh_run(
+    use_native: bool,
+    target: &str,
+    config: &crate::hosts::HostConfig,
+    password: &str,
+    remote_cmd: &str,
+) -> anyhow::Result<Output> {
+    if use_native {
+        let mut c = Command::new("ssh");
+        for a in ssh_base_args() {
+            c.arg(a);
+        }
+        c.arg(target).arg(remote_cmd);
+        run_cmd(c)
+    } else {
+        let cmd = format!(
+            "sshpass -e ssh -o StrictHostKeyChecking=no {}@{} {}",
+            config.user,
+            config.host,
+            shell_single_quote(remote_cmd)
+        );
+        Command::new("bash")
+            .arg("-c")
+            .arg(&cmd)
+            .env("SSHPASS", password)
+            .output()
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+}
+
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

@@ -323,9 +323,12 @@ fn run_remote(text: &str, lang: &str, login: bool, json_output: bool, remote: &c
     
     let (tmp_path, exec_cmd, rm_cmd) = match os {
         crate::hosts::RemoteOs::Windows => {
+            // 用系统自带 Windows PowerShell 5.1 全路径（避免 pwsh 未装 / PS7 坏 shim）
+            let ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
             let tmp = format!("C:\\Users\\{}\\AppData\\Local\\Temp\\_rxt_exec.ps1", remote.host_config().user);
-            let exec = format!("pwsh -NoProfile -Command \"[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8; & '{}'\"", tmp);
-            let rm = format!("pwsh -NoProfile -Command \"Remove-Item \'{}\'  -Force -ErrorAction SilentlyContinue\"", tmp);
+            // -ExecutionPolicy Bypass：远端默认 Restricted 时禁止跑 .ps1
+            let exec = format!("{} -NoProfile -ExecutionPolicy Bypass -Command \"[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8; & '{}'\"", ps, tmp);
+            let rm = format!("{} -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item \'{}\'  -Force -ErrorAction SilentlyContinue\"", ps, tmp);
             (tmp, exec, rm)
         }
         _ => {

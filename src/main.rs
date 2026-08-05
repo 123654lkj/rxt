@@ -64,7 +64,10 @@ enum Command {
         path: PathBuf,
         #[arg(long)] json: bool,
     },
-    #[command(about = "智能搜索")]
+    #[command(
+        about = "智能搜索",
+        after_help = "示例:\n  rxt find TODO -p src\n  rxt find /dir --name '*.rs'\n  rxt find /dir -name '*.md'   # GNU 风格 -name 也认\n  rxt --host huhu find /home/huhu --name '*.md'"
+    )]
     Find {
         query: Option<String>,
         #[arg(short, long)] path: Option<PathBuf>,
@@ -292,6 +295,29 @@ enum Command {
         #[arg(long, help = "token 预算")] budget: Option<usize>,
         #[arg(long)] json: bool,
     },
+    #[command(about = "AI 一键简报 — map+优先digest+focus，硬预算省上下文/调用次数")]
+    Pack {
+        #[arg(help = "项目目录，默认 .")]
+        dir: Option<PathBuf>,
+        #[arg(short = 'b', long, default_value_t = 6000, help = "输出字符硬预算 (≈ budget/3.5 tokens)")]
+        budget: usize,
+        #[arg(short = 'd', long, default_value_t = 2, help = "目录树深度")]
+        depth: usize,
+        #[arg(long, help = "关键词：附带紧凑 grep 命中")]
+        focus: Option<String>,
+        #[arg(long, help = "最多展开骨架的文件数 (默认按 budget 自适应)")]
+        max_files: Option<usize>,
+        #[arg(long, default_value_t = 10, help = "每文件最多符号行")]
+        per_file: usize,
+        #[arg(short = 't', long, default_value_t = 8, help = "函数体超过 N 行标记折叠")]
+        threshold: usize,
+        #[arg(long, help = "不要目录树")]
+        no_tree: bool,
+        #[arg(long, help = "不要符号骨架")]
+        no_digest: bool,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(about = "引用查找 — 默认列出符号所有出现(def/call); --callers 谁调用了它; --callees 它调用了谁")]
     Refs {
         symbol: String,
@@ -409,6 +435,11 @@ enum Command {
         #[arg(long, help = "指定 feature")] features: Option<String>,
         #[arg(long, help = "只 pull 不编译")] no_build: bool,
     },
+    #[command(about = "从 huhu 更新频道安装预编译二进制（局域网）")]
+    Update {
+        #[arg(long, help = "只检查不安装")] check: bool,
+        #[arg(long, help = "忽略节流强制检查")] force: bool,
+    },
     #[command(about = "HTTP 文件服务器 — 手机扫码秒访问")]
     Serve {
         dir: Option<String>,
@@ -504,21 +535,64 @@ enum Command {
         #[arg(long, help = "首个失败即停,显示diff")] first_fail: bool,
         #[arg(long)] json: bool,
     },
-    #[command(about = "MCP server 模式 (stdio JSON-RPC, 暴露全部命令给 AI)")]
+    #[command(about = "MCP server 模式 (stdio JSON-RPC；默认 --slim 只暴露省 token 工具)")]
     Mcp {
         #[arg(long, help = "SSE 端口(暂未实现,本地用 stdio)")] sse: Option<u16>,
+        #[arg(long, help = "暴露全部命令(肥 schema，一般别开)")] full: bool,
+        #[arg(long, default_value_t = true, help = "精简工具集 pack/map/digest/refs/grep/read/write/cat/find/impact/ls/ctx")]
+        slim: bool,
     },
 }
 
 #[derive(Subcommand, Clone)]
 enum MemAction {
-    #[command(about = "保存记忆")]
-    Save { content: String, #[arg(long, default_value = "code")] category: String, #[arg(long, default_value_t = 0.6)] importance: f64 },
-    #[command(about = "搜索记忆")]
-    Search { query: String, #[arg(short = 'k', long = "top-k", default_value = "5")] top_k: usize },
-    #[command(about = "星枢统计")]
+    /// 保存记忆 → POST /memory/add
+    #[command(about = "保存记忆到星枢")]
+    Save {
+        content: String,
+        #[arg(long, default_value = "fact")]
+        category: String,
+        #[arg(long, default_value_t = 0.6)]
+        importance: f64,
+    },
+    /// 搜索 → POST /ask
+    #[command(about = "星枢 /ask 搜索（contract+pack）", visible_alias = "ask")]
+    Search {
+        query: String,
+        #[arg(short = 'k', long = "top-k", default_value = "5")]
+        top_k: usize,
+    },
+    /// 统计
+    #[command(about = "星枢 /v5/health + stats")]
     Stats,
+    /// 会话抽取
+    #[command(about = "会话抽取写回星枢")]
+    Extract {
+        /// 会话文本
+        transcript: String,
+        #[arg(long, default_value = "")]
+        focus: String,
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+    /// 开场 bootstrap
+    #[command(about = "会话开场 bootstrap 注入")]
+    Bootstrap {
+        focus: String,
+        #[arg(long, default_value_t = 2000)]
+        budget: u32,
+    },
+    /// 分层计划
+    #[command(about = "Letta 分层调用计划")]
+    Layers {
+        #[arg(default_value = "")]
+        focus: String,
+    },
+    /// 短帮助
+    #[command(about = "mem 用法（短）")]
+    Help,
 }
+
 
 mod common;
 mod signature;
@@ -545,6 +619,7 @@ mod remote;
 mod storage;
 mod map;
 mod digest;
+mod pack;
 mod refs;
 mod callgraph;
 mod churn;
@@ -562,6 +637,8 @@ mod reg;
 mod net;
 // 高效工具族 (v0.4.0+)
 mod upgrade;
+#[cfg(feature = "net")]
+mod channel_update;
 mod deploy;
 mod version;
 mod sync;
@@ -579,18 +656,40 @@ mod watch_run;
 mod evolve;
 mod mcp;
 
+/// GNU find 兼容：`-name`/`-type`/`-path` → clap long flag（仅 find 子命令上下文）
+fn normalize_gnu_find_flags(args: &mut [String]) {
+    let is_find = args.iter().any(|a| a == "find");
+    if !is_find {
+        return;
+    }
+    for a in args.iter_mut() {
+        match a.as_str() {
+            "-name" => *a = "--name".into(),
+            "-type" => *a = "--type".into(),
+            "-path" => *a = "--path".into(),
+            _ => {}
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
+    // password_env：从 ~/.rxt/env 注入（Agent/非登录壳也能用）
+    let _ = crate::hosts::HostsFile::load_dotenv();
+    // 局域网频道自动更新（节流；RXT_UPDATE_AUTO=0 关闭）
+    #[cfg(feature = "net")]
+    crate::channel_update::auto_check_on_start();
 
     // Handle --describe before clap parses (since --describe needs to be a top-level flag,
     // and adding it to Cli struct requires changes).
     // Use raw arg parsing for this.
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--describe") {
         return describe::run();
     }
+    normalize_gnu_find_flags(&mut args);
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(&args);
     
     // v0.4.2: Deploy/Version 有自己的 group 逻辑，不走全局批量拦截
     match &cli.command {
@@ -612,6 +711,17 @@ fn main() -> anyhow::Result<()> {
             return version::run_local();
         }
         _ => {}
+    }
+
+    // mem 不需要 SFTP/远端 rxt 通道：--host 只映射到 RXT_NEBULA_SSH（星枢 ssh 跳板）
+    if matches!(cli.command, Command::Mem { .. }) {
+        if let Some(ref host) = cli.host {
+            if std::env::var("RXT_NEBULA_SSH").is_err() {
+                // SAFETY: 进程早期、单线程主路径，设置跳板主机名供 mem 使用
+                std::env::set_var("RXT_NEBULA_SSH", host);
+            }
+        }
+        return execute_command(cli.command, None);
     }
 
     // 如果有 --group,批量执行
@@ -689,7 +799,7 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             stat::run(&path, json, None)?;
         }
         Command::Find { query, path, name_pattern, file_type, context, case_sensitive, count, stats, replace, replace_with, preview, regex, json, max_results, head, offset } => {
-            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote.as_ref().map(|r| &**r))?;
+            find::run(query.as_deref(), path.as_deref(), name_pattern.as_deref(), file_type.as_deref(), context, case_sensitive, count, stats, replace.as_deref(), replace_with.as_deref(), preview, regex, json, max_results, head, offset, remote.as_mut().map(|r| &mut **r))?;
         }
         Command::Struct { path, functions, types, deep, extract, json } => {
             struct_mod::run(&path, functions, types, deep, extract.as_deref(), json)?;
@@ -733,6 +843,10 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             MemAction::Save { content, category, importance } => mem::run_save(&content, &category, importance)?,
             MemAction::Search { query, top_k } => mem::run_search(&query, top_k)?,
             MemAction::Stats => mem::run_stats()?,
+            MemAction::Extract { transcript, focus, dry_run } => mem::run_extract(&transcript, &focus, dry_run)?,
+            MemAction::Bootstrap { focus, budget } => mem::run_bootstrap(&focus, budget)?,
+            MemAction::Layers { focus } => mem::run_layers(&focus)?,
+            MemAction::Help => mem::run_help()?,
         },
         Command::Tree { path, depth, ignore, dirs_only, json } => {
             let ignores: Vec<String> = ignore.as_deref()
@@ -853,13 +967,81 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         }
         Command::Map { dir, depth, refresh, json } => {
             let d = dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            // 远程：优先远端 rxt map，一次回传（本地路径对远端无意义）
+            if let Some(ref mut rc) = remote {
+                let mut args = vec![
+                    "map".to_string(),
+                    d.display().to_string(),
+                    "-d".to_string(),
+                    depth.to_string(),
+                ];
+                if refresh { args.push("--refresh".into()); }
+                if json { args.push("--json".into()); }
+                let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+            }
             map::run(d, json, refresh, depth)?;
         }
         Command::Digest { path, threshold, budget, json } => {
+            if let Some(ref mut rc) = remote {
+                let mut args = vec![
+                    "digest".to_string(),
+                    path.display().to_string(),
+                    "-t".to_string(),
+                    threshold.to_string(),
+                ];
+                if let Some(b) = budget {
+                    args.push("--budget".into());
+                    args.push(b.to_string());
+                }
+                if json { args.push("--json".into()); }
+                let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+            }
             digest::run(&path, threshold, budget, json)?;
+        }
+        Command::Pack {
+            dir, budget, depth, focus, max_files, per_file, threshold, no_tree, no_digest, json,
+        } => {
+            let d = dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            pack::run(
+                d,
+                budget,
+                depth,
+                focus.as_deref(),
+                max_files,
+                per_file,
+                threshold,
+                no_tree,
+                no_digest,
+                json,
+                remote.as_deref_mut(),
+            )?;
         }
         Command::Refs { symbol, path, callers, callees, json } => {
             let p = path.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            if let Some(ref mut rc) = remote {
+                let mut args = vec![
+                    "refs".to_string(),
+                    symbol.clone(),
+                    "-p".to_string(),
+                    p.display().to_string(),
+                ];
+                if callers { args.push("--callers".into()); }
+                if callees { args.push("--callees".into()); }
+                if json { args.push("--json".into()); }
+                let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                if let Some(out) = rc.try_exec_rxt(&refs) {
+                    print!("{}", out);
+                    return Ok(());
+                }
+            }
             refs::run(&symbol, p, callers, callees, json)?;
         }
         // v0.8.0 代码智能四件套
@@ -922,8 +1104,17 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Net { conn, resolve, route, port, json } => {
             net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json, remote.as_ref().map(|r| &**r))?;
         }
-        Command::Upgrade { repo, check, features, no_build } => {
+                Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;
+        }
+        #[cfg(feature = "net")]
+        Command::Update { check, force } => {
+            let _ = force;
+            channel_update::run(check, force)?;
+        }
+        #[cfg(not(feature = "net"))]
+        Command::Update { .. } => {
+            anyhow::bail!("rxt update 需要 net feature");
         }
         // Deploy/Version/Sync 在 main() 前置处理, 不会到达这里
         Command::Deploy { .. } | Command::Version { .. } | Command::Sync { .. } => unreachable!(),
@@ -964,8 +1155,10 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Evolve { reference, candidate, inputs, mode, timeout, first_fail, json } => {
             evolve::run(&reference, &candidate, &inputs, &mode, timeout, first_fail, json)?;
         }
-        Command::Mcp { sse } => {
-            mcp::run(sse)?;
+        Command::Mcp { sse, full, slim } => {
+            // full 优先；否则默认 slim
+            let mode_slim = if full { false } else { slim };
+            mcp::run(sse, mode_slim)?;
         }
     }
     Ok(())

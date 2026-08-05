@@ -122,10 +122,12 @@ fn run_remote(dir: &Path, depth: Option<usize>, rc: &crate::remote::RemoteChanne
     let max_d = depth.unwrap_or(1);
 
     if rc.is_windows() {
-        // PowerShell: 用 Get-ChildItem 输出简洁的目录列表
+        // OpenSSH 默认 shell 是 cmd，必须显式走系统 PowerShell 5.1
+        let ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let win_path = path_str.replace('/', "\\");
         let cmd = format!(
-            "Get-ChildItem -Path '{}' -Recurse -Depth {} -Force | Select-Object Mode, Length, LastWriteTime, Name | Format-Table -AutoSize",
-            path_str, max_d
+            r#"{} -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '{}' -Recurse -Depth {} -Force | Select-Object Mode, Length, LastWriteTime, Name | Format-Table -AutoSize""#,
+            ps, win_path, max_d
         );
         let out = rc.exec(&cmd)?;
         println!("{}", out.trim_end());

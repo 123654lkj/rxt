@@ -23,42 +23,115 @@ pub fn safe_resolve(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// stdout 是否接终端（Agent/管道捕获时为 false）。
+pub fn stdout_is_tty() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE,
+        };
+        unsafe {
+            let h = GetStdHandle(STD_OUTPUT_HANDLE);
+            if h.is_null() || h == (-1isize as _) {
+                return false;
+            }
+            let mut mode = 0u32;
+            GetConsoleMode(h, &mut mode) != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        unsafe { libc::isatty(1) == 1 }
+    }
+}
+
+/// 是否处于 Agent/管道捕获模式（自动 BOM，便于 PowerShell 识别 UTF-8）。
+///
+/// 触发条件（任一）：
+/// - `RXT_AGENT=1` / `true` / `yes`
+/// - `RXT_WRITE_BOM=1`
+/// - Windows 且 stdout 非 TTY（被管道/工具捕获）
+pub fn agent_capture_mode() -> bool {
+    fn truthy(v: &str) -> bool {
+        matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    }
+    if std::env::var("RXT_WRITE_BOM").ok().as_deref().map(truthy).unwrap_or(false) {
+        return true;
+    }
+    if std::env::var("RXT_AGENT").ok().as_deref().map(truthy).unwrap_or(false) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        if !stdout_is_tty() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Configure stdout for cross-platform UTF-8 output.
 ///
 /// On Windows, Rust std writes to console with code page 437/GBK by default,
 /// causing Chinese characters to display as `?` even though the underlying
 /// bytes are valid UTF-8. This function:
-/// 1. Detects if running on Windows
-/// 2. Sets the console output code page to UTF-8 (65001)
-/// 3. Reconfigures stdout to use UTF-8
+/// 1. Sets console **input+output** code page to UTF-8 (65001)
+/// 2. Enables virtual terminal processing when possible
 ///
 /// Call this at the start of any command that may output non-ASCII content.
 pub fn setup_utf8_console() {
     #[cfg(windows)]
     {
-        unsafe {
-            use windows_sys::Win32::System::Console::{SetConsoleOutputCP, GetConsoleOutputCP};
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| unsafe {
+            use windows_sys::Win32::System::Console::{
+                GetConsoleMode, GetStdHandle, SetConsoleCP, SetConsoleMode, SetConsoleOutputCP,
+                ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+            };
 
-            // 65001 = UTF-8 code page
+            // 65001 = UTF-8 code page（输入+输出都设，修 PS 读入/显示中文乱码）
             let _ = SetConsoleOutputCP(65001);
+            let _ = SetConsoleCP(65001);
 
-            // Sanity check — ensure API is reachable
-            let _ = GetConsoleOutputCP();
-        }
+            for handle_id in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let h = GetStdHandle(handle_id);
+                if h.is_null() || h == (-1isize as _) {
+                    continue;
+                }
+                let mut mode = 0u32;
+                if GetConsoleMode(h, &mut mode) != 0 {
+                    let _ = SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+                }
+            }
+        });
     }
     // On non-Windows, no action needed
 }
 
-/// Write a UTF-8 BOM (3 bytes: EF BB BF) to stdout.
+/// Write a UTF-8 BOM (3 bytes: EF BB BF) to stdout when in agent/capture mode.
 ///
-/// Useful when piping to Windows tools that expect a BOM to detect UTF-8.
-/// Idempotent: only writes BOM if explicitly requested via env var
-/// RXT_WRITE_BOM=1. Otherwise writes raw UTF-8.
+/// 解决：Agent/PowerShell 管道捕获时把 UTF-8 中文当系统 ANSI 解码导致乱码。
+/// 关闭：`RXT_NO_BOM=1`（即使管道也不写 BOM）。
 pub fn maybe_write_bom(out: &mut dyn std::io::Write) -> std::io::Result<()> {
-    if std::env::var("RXT_WRITE_BOM").ok().as_deref() == Some("1") {
+    if std::env::var("RXT_NO_BOM").ok().as_deref().map(|v| {
+        matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    }).unwrap_or(false) {
+        return Ok(());
+    }
+    if agent_capture_mode() {
         out.write_all(&[0xEF, 0xBB, 0xBF])?;
     }
     Ok(())
+}
+
+/// 带 UTF-8 控制台 + 可选 BOM 的 println 封装（pack/info 等入口复用）。
+pub fn println_utf8(s: &str) {
+    setup_utf8_console();
+    let mut stdout = std::io::stdout().lock();
+    let _ = maybe_write_bom(&mut stdout);
+    use std::io::Write;
+    let _ = writeln!(stdout, "{}", s);
 }
 
 /// Find files matching a pattern in a directory (helper for rxt_ls).

@@ -5,6 +5,27 @@ use crate::signature::{FileSignature, to_utf8_lf};
 use std::collections::BTreeMap;
 use regex::Regex;
 
+/// 路径感观：用于 `rxt find /dir --name '*.rs'`（query 位当目录）
+fn looks_like_path(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.starts_with('/')
+        || s.starts_with("./")
+        || s.starts_with(".\\")
+        || s.starts_with("~/")
+        || s.starts_with("~\\")
+    {
+        return true;
+    }
+    let b = s.as_bytes();
+    // Windows 盘符 C:\ 或 C:/
+    if b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+        return true;
+    }
+    s.contains('/') || s.contains('\\')
+}
+
 pub fn run(
     query: Option<&str>,
     path: Option<&Path>,
@@ -22,20 +43,100 @@ pub fn run(
     max_results: Option<usize>,
     head: Option<usize>,
     offset: usize,
-    remote: Option<&crate::remote::RemoteChannel>,
+    remote: Option<&mut crate::remote::RemoteChannel>,
 ) -> anyhow::Result<()> {
+    // 远程：交给远端 rxt 算完回传（与 pack 同模式）
+    if let Some(rc) = remote {
+        let mut args: Vec<String> = vec!["find".into()];
+        let (eff_query, eff_path) = resolve_query_path(query, path, name_pattern, do_stats, replace);
+        if let Some(q) = eff_query {
+            args.push(q.to_string());
+        }
+        if let Some(p) = path {
+            args.push("--path".into());
+            args.push(p.display().to_string());
+        } else if eff_query.is_none() && eff_path.as_os_str() != std::ffi::OsStr::new(".") {
+            args.push("--path".into());
+            args.push(eff_path.display().to_string());
+        }
+        if let Some(n) = name_pattern {
+            args.push("--name".into());
+            args.push(n.to_string());
+        }
+        if let Some(t) = file_type {
+            args.push("--type".into());
+            args.push(t.to_string());
+        }
+        args.push("--context".into());
+        args.push(context.to_string());
+        if case_sensitive {
+            args.push("--case-sensitive".into());
+        }
+        if count {
+            args.push("--count".into());
+        }
+        if do_stats {
+            args.push("--stats".into());
+        }
+        if let Some(old) = replace {
+            args.push("--replace".into());
+            args.push(old.to_string());
+        }
+        if let Some(nw) = replace_with {
+            args.push("--with".into());
+            args.push(nw.to_string());
+        }
+        if preview {
+            args.push("--preview".into());
+        }
+        if use_regex {
+            args.push("--regex".into());
+        }
+        if json_output {
+            args.push("--json".into());
+        }
+        if let Some(m) = max_results {
+            args.push("--max-results".into());
+            args.push(m.to_string());
+        }
+        if let Some(h) = head {
+            args.push("--head".into());
+            args.push(h.to_string());
+        }
+        if offset > 0 {
+            args.push("--offset".into());
+            args.push(offset.to_string());
+        }
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        if let Some(out) = rc.try_exec_rxt(&arg_refs) {
+            let mut stdout = io::stdout().lock();
+            let _ = crate::common::maybe_write_bom(&mut stdout);
+            let _ = write!(stdout, "{}", out);
+            if !out.ends_with('\n') {
+                let _ = writeln!(stdout);
+            }
+            return Ok(());
+        }
+        anyhow::bail!("远端无 rxt，无法 find。请先安装 rxt 0.8.6+ 或改用本地路径。");
+    }
+
+    let (eff_query, search_dir_owned) = resolve_query_path(query, path, name_pattern, do_stats, replace);
+    let search_dir = search_dir_owned.as_path();
+
     let compiled_re = if use_regex {
-        match query {
+        match eff_query {
             Some(q) => match Regex::new(q) {
                 Ok(r) => Some(r),
-                Err(e) => anyhow::bail!("Invalid regex: {}", e),
+                Err(e) => anyhow::bail!(
+                    "无效正则: {}\n示例: rxt find 'fn\\s+main' --regex -p src",
+                    e
+                ),
             },
             None => None,
         }
     } else {
         None
     };
-    let search_dir = path.unwrap_or(Path::new("."));
 
     if let (Some(old), Some(new)) = (replace, replace_with) {
         return run_replace(search_dir, name_pattern, file_type, old, new, preview);
@@ -49,12 +150,53 @@ pub fn run(
         return search_by_name(search_dir, pattern, file_type, json_output);
     }
 
-    if let Some(q) = query {
+    if let Some(q) = eff_query {
         let ext_filter = file_type.and_then(|t| ext_for_type(t));
-        return search_content(search_dir, q, ext_filter, context, case_sensitive, count, &compiled_re, json_output, max_results, head, offset);
+        return search_content(
+            search_dir,
+            q,
+            ext_filter,
+            context,
+            case_sensitive,
+            count,
+            &compiled_re,
+            json_output,
+            max_results,
+            head,
+            offset,
+        );
     }
 
-    anyhow::bail!("no action: provide a <query>, --name <pattern>, --stats, or --replace <old> --with <new>")
+    anyhow::bail!(
+        "缺少动作。用法示例:\n  \
+         rxt find TODO -p src\n  \
+         rxt find /path/to/dir --name '*.rs'\n  \
+         rxt find /path/to/dir -n '*.md'   # -n/--name/-name 均可\n  \
+         rxt find --stats -p .\n  \
+         rxt --host huhu find /home/huhu --name '*.md'"
+    )
+}
+
+/// 当 `--name` / `--stats` / `--replace` 且未给 `--path` 时，把像路径的 query 提升为目录。
+fn resolve_query_path<'a>(
+    query: Option<&'a str>,
+    path: Option<&'a Path>,
+    name_pattern: Option<&str>,
+    do_stats: bool,
+    replace: Option<&str>,
+) -> (Option<&'a str>, PathBuf) {
+    if let Some(p) = path {
+        return (query, p.to_path_buf());
+    }
+    let pathish = name_pattern.is_some() || do_stats || replace.is_some();
+    if pathish {
+        if let Some(q) = query {
+            if looks_like_path(q) {
+                return (None, PathBuf::from(q));
+            }
+        }
+    }
+    (query, PathBuf::from("."))
 }
 
 fn ext_for_type(t: &str) -> Option<&'static str> {

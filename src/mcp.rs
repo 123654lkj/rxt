@@ -5,40 +5,52 @@
 //!
 //! 协议: MCP (Model Context Protocol)
 //!   - initialize: 握手, 返回 server info + capabilities
-//!   - tools/list: 列出所有 rxt 命令(从 --describe 生成)
+//!   - tools/list: 列出工具(默认 slim 精简集, 省每轮 schema token)
 //!   - tools/call: 执行指定命令
 //!
 //! 用法:
-//!   rxt mcp              # 启动 stdio MCP server
-//!   rxt mcp --sse 8652   # SSE 模式(兼容旧 server.py 客户端)
+//!   rxt mcp              # 默认 --slim（推荐给 AI）
+//!   rxt mcp --full       # 暴露全部命令（schema 很肥）
+//!   rxt mcp --sse 8652   # SSE 模式(暂未实现)
 //!
-//! MCP 配置(ZCode):
-//!   "rxt": { "type": "stdio", "command": "C:\\rxt\\rxt.exe", "args": ["mcp"] }
+//! MCP 配置(Grok/ZCode):
+//!   command = "rxt", args = ["mcp"]   # slim
+//!   command = "rxt", args = ["mcp", "--full"]
 
 use std::io::{self, BufRead, Write, BufReader};
 use std::process::Command;
 use serde_json::{json, Value};
 
-pub fn run(sse_port: Option<u16>) -> anyhow::Result<()> {
-    if let Some(port) = sse_port {
+/// 精简工具集：覆盖 90% agent 探索/读写，schema 体积约为 full 的 ~15%
+const SLIM_TOOLS: &[&str] = &[
+    "pack", "map", "digest", "ctx", "refs", "impact",
+    "grep", "find", "read", "write", "cat", "ls", "tree",
+    "edit", "sed", "struct",
+];
+
+pub fn run(sse_port: Option<u16>, slim: bool) -> anyhow::Result<()> {
+    if let Some(_port) = sse_port {
         anyhow::bail!(
             "SSE 模式暂未实现(本地用 stdio 即可)。如需远程, 用 server.py 或 rxt --host。\n\
              本地 MCP 配置: {{\"type\":\"stdio\",\"command\":\"rxt\",\"args\":[\"mcp\"]}}"
         );
     }
-    stdio_server()
+    stdio_server(slim)
 }
 
-fn stdio_server() -> anyhow::Result<()> {
+fn stdio_server(slim: bool) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = BufReader::new(stdin.lock());
 
     // 输出到 stderr 不干扰 JSON-RPC(stdout)
-    eprintln!("rxt MCP server (stdio) ready");
+    eprintln!(
+        "rxt MCP server (stdio) ready — mode={}",
+        if slim { "slim" } else { "full" }
+    );
 
     // 缓存 tools/list 结果(避免每行重算)
-    let tools_schema = build_tools_list();
+    let tools_schema = build_tools_list(slim);
 
     for line in reader.lines() {
         let line = match line {
@@ -97,7 +109,7 @@ fn handle_initialize() -> Value {
 }
 
 /// 从 rxt 自身的 --describe 输出生成 MCP tools/list
-fn build_tools_list() -> Value {
+fn build_tools_list(slim: bool) -> Value {
     // 直接调自身 --describe
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rxt"));
     let out = Command::new(&exe).arg("--describe").output();
@@ -115,7 +127,8 @@ fn build_tools_list() -> Value {
 
     for cmd in &commands {
         let name = cmd.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if name.is_empty() || name == "help" { continue; }
+        if name.is_empty() || name == "help" || name == "mcp" { continue; }
+        if slim && !SLIM_TOOLS.contains(&name) { continue; }
         let about = cmd.get("about").and_then(|a| a.as_str()).unwrap_or("");
         let args = cmd.get("args").and_then(|a| a.as_array()).cloned().unwrap_or_default();
 

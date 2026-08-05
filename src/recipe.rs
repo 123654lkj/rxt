@@ -28,7 +28,16 @@ pub fn run(action: &str, name: Option<&str>, content: Option<&str>, args: &[Stri
         "list" | "ls" => list(&store, json),
         "run" | "exec" => {
             let n = name.ok_or_else(|| anyhow::anyhow!("需要 recipe 名"))?;
-            run_recipe(&store, n, args, dry_run)
+            // clap 把 NAME 后第一个位置参数吃进 content；run 时并入 $1..$n
+            // 用法: rxt recipe run explore /path/to/dir
+            let mut run_args: Vec<String> = Vec::new();
+            if let Some(c) = content {
+                if !c.is_empty() {
+                    run_args.push(c.to_string());
+                }
+            }
+            run_args.extend_from_slice(args);
+            run_recipe(&store, n, &run_args, dry_run)
         }
         "show" | "cat" => {
             let n = name.ok_or_else(|| anyhow::anyhow!("需要 recipe 名"))?;
