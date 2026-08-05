@@ -63,7 +63,14 @@ pub struct SeekConfig {
 }
 
 fn default_provider() -> String { "nebula".into() }
-fn default_nebula_url() -> String { "http://192.168.31.252:26670".into() }
+fn default_nebula_url() -> String {
+    std::env::var("RXT_NEBULA_URL")
+        .or_else(|_| std::env::var("NEBULA_URL"))
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:26670".into())
+}
 
 impl Default for SeekConfig {
     fn default() -> Self {

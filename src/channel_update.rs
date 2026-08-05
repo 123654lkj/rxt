@@ -1,6 +1,6 @@
-//! channel_update — 从 huhu 更新频道拉预编译二进制（局域网默认）
+//! channel_update — 从自建更新频道拉预编译二进制
 //!
-//! 频道根默认: http://192.168.31.252:26780/
+//! 频道根目录需提供:
 //!   manifest.json
 //!   rxt-x86_64-unknown-linux-gnu
 //!   rxt-x86_64-pc-windows-msvc.exe  (可选)
@@ -11,9 +11,12 @@
 //!   rxt update --force      # 忽略节流强制检查
 //!
 //! 环境变量:
-//!   RXT_UPDATE_URL     默认 http://192.168.31.252:26780
-//!   RXT_UPDATE_AUTO=0  关闭启动自动检查
+//!   RXT_UPDATE_URL       频道根 URL（必填，否则 update 报错、启动自动检查跳过）
+//!   RXT_UPDATE_AUTO=0    关闭启动自动检查
 //!   RXT_UPDATE_CHECK_HOURS  自动检查间隔小时（默认 6）
+//!
+//! 例: 写入 ~/.rxt/env
+//!   RXT_UPDATE_URL=http://192.168.1.10:26780
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -21,8 +24,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const DEFAULT_URL: &str = "http://192.168.31.252:26780";
 
 #[derive(Debug, serde::Deserialize)]
 struct Manifest {
@@ -41,11 +42,21 @@ struct Asset {
     size: Option<u64>,
 }
 
-fn update_url() -> String {
+fn update_url_opt() -> Option<String> {
     std::env::var("RXT_UPDATE_URL")
-        .unwrap_or_else(|_| DEFAULT_URL.to_string())
-        .trim_end_matches('/')
-        .to_string()
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty())
+}
+
+fn update_url() -> anyhow::Result<String> {
+    update_url_opt().ok_or_else(|| {
+        anyhow::anyhow!(
+            "未设置 RXT_UPDATE_URL。\n\
+             例: export RXT_UPDATE_URL=http://your-server:26780\n\
+             或写入 ~/.rxt/env 后重试"
+        )
+    })
 }
 
 fn platform_key() -> &'static str {
@@ -148,7 +159,7 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 fn fetch_manifest() -> anyhow::Result<Manifest> {
-    let url = format!("{}/manifest.json", update_url());
+    let url = format!("{}/manifest.json", update_url()?);
     let bytes = fetch_url(&url)?;
     let text = String::from_utf8_lossy(&bytes);
     let m: Manifest = serde_json::from_str(&text).map_err(|e| {
@@ -167,6 +178,10 @@ pub fn auto_check_on_start() {
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
     {
+        return;
+    }
+    // 未配置频道则静默跳过（开源默认不绑任何内网地址）
+    if update_url_opt().is_none() {
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("update") {
@@ -242,7 +257,12 @@ pub fn run(check_only: bool, _force: bool) -> anyhow::Result<UpdateResult> {
     })?;
 
     if !is_newer(&remote, &local) {
-        println!("✓ 已是最新 rxt {} (频道 {} 远程 {})", local, update_url(), remote);
+        println!(
+            "✓ 已是最新 rxt {} (频道 {} 远程 {})",
+            local,
+            update_url()?,
+            remote
+        );
         return Ok(UpdateResult::UpToDate { local, remote });
     }
 
@@ -257,7 +277,7 @@ pub fn run(check_only: bool, _force: bool) -> anyhow::Result<UpdateResult> {
         return Ok(UpdateResult::Available { local, remote });
     }
 
-    let url = format!("{}/{}", update_url(), asset.file.trim_start_matches('/'));
+    let url = format!("{}/{}", update_url()?, asset.file.trim_start_matches('/'));
     println!("⬇  下载 {} ...", url);
     let bytes = fetch_url(&url)?;
     if let Some(sz) = asset.size {

@@ -10,7 +10,7 @@ default = ["remote", "xz", "net"]
 remote = ["russh", "tokio", "shellexpand"]
 # .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
 xz = ["xz2"]
-# HTTP 客户端 + 星枢记忆(ureq → ring → C 编译器)。本地无 gcc 时关掉此 feature。
+# HTTP 客户端 + 记忆 API (ureq → ring → C 编译器)。本地无 gcc 时关掉此 feature。
 net = ["ureq"]
 
 [dependencies]

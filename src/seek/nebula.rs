@@ -19,7 +19,11 @@ impl NebulaProvider {
         match client.get(&url).call() {
             Ok(_) => {}
             Err(e) => {
-                anyhow::bail!("星枢连接失败 ({}): {} — 确认虎虎开机且星枢服务运行中", url, e);
+                anyhow::bail!(
+                    "星枢连接失败 ({}): {} — 检查服务是否运行，或设 RXT_NEBULA_URL",
+                    url,
+                    e
+                );
             }
         }
         Ok(Self {

@@ -5,6 +5,6 @@ pub fn run(_method: &str, _url: &str, _headers: &[String], _data: Option<&str>, 
     anyhow::bail!(
         "本 rxt 二进制未启用 net 功能(http 命令不可用)。\n\
          原因: 本地编译时关闭了 `net` feature(避开 ureq→ring→C 编译器依赖)。\n\
-         如需 HTTP 客户端,请用启用 net 的版本(虎虎上编译的 rxt)。"
+         如需 HTTP 客户端，请用启用 net feature 编译的 rxt。"
     )
 }

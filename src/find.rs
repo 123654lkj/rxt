@@ -173,7 +173,7 @@ pub fn run(
          rxt find /path/to/dir --name '*.rs'\n  \
          rxt find /path/to/dir -n '*.md'   # -n/--name/-name 均可\n  \
          rxt find --stats -p .\n  \
-         rxt --host huhu find /home/huhu --name '*.md'"
+         rxt --host lab find /home/user --name '*.md'"
     )
 }
 

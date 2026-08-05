@@ -66,7 +66,7 @@ enum Command {
     },
     #[command(
         about = "智能搜索",
-        after_help = "示例:\n  rxt find TODO -p src\n  rxt find /dir --name '*.rs'\n  rxt find /dir -name '*.md'   # GNU 风格 -name 也认\n  rxt --host huhu find /home/huhu --name '*.md'"
+        after_help = "示例:\n  rxt find TODO -p src\n  rxt find /dir --name '*.rs'\n  rxt find /dir -name '*.md'   # GNU 风格 -name 也认\n  rxt --host lab find /home/user --name '*.md'"
     )]
     Find {
         query: Option<String>,
@@ -435,7 +435,7 @@ enum Command {
         #[arg(long, help = "指定 feature")] features: Option<String>,
         #[arg(long, help = "只 pull 不编译")] no_build: bool,
     },
-    #[command(about = "从 huhu 更新频道安装预编译二进制（局域网）")]
+    #[command(about = "从更新频道安装预编译二进制（需 RXT_UPDATE_URL）")]
     Update {
         #[arg(long, help = "只检查不安装")] check: bool,
         #[arg(long, help = "忽略节流强制检查")] force: bool,

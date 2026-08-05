@@ -60,7 +60,7 @@ pub fn run(
     Ok(())
 }
 
-/// 是否更像用「主机别名」走 OpenSSH config（Win/本机 ssh huhu 可用）
+/// 是否更像用「主机别名」走 OpenSSH config（本机 `ssh <alias>` 可用）
 fn prefer_ssh_alias() -> bool {
     // Windows 上 OpenSSH 常见；有 ssh 且无 bash 时必须走原生
     which("ssh").is_some() && (cfg!(windows) || which("sshpass").is_none())
