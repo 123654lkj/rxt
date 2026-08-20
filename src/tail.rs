@@ -6,12 +6,18 @@
 //! - --lines N: 先打印最后 N 行(类似 tail -n)
 //! - --once: 打印最后 N 行后退出
 
-use std::path::Path;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::time::Duration;
 
-pub fn run(path: &Path, filter: Option<&str>, interval_ms: u64, lines: usize, once: bool) -> anyhow::Result<()> {
+pub fn run(
+    path: &Path,
+    filter: Option<&str>,
+    interval_ms: u64,
+    lines: usize,
+    once: bool,
+) -> anyhow::Result<()> {
     if !path.exists() {
         anyhow::bail!("file not found: {}", path.display());
     }
@@ -30,7 +36,9 @@ pub fn run(path: &Path, filter: Option<&str>, interval_ms: u64, lines: usize, on
         }
     }
 
-    if once { return Ok(()); }
+    if once {
+        return Ok(());
+    }
 
     let mut last_size: u64 = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let interval = Duration::from_millis(interval_ms);
@@ -46,9 +54,13 @@ pub fn run(path: &Path, filter: Option<&str>, interval_ms: u64, lines: usize, on
                 Ok(f) => f,
                 Err(_) => continue,
             };
-            if f.seek(SeekFrom::Start(last_size)).is_err() { continue; }
+            if f.seek(SeekFrom::Start(last_size)).is_err() {
+                continue;
+            }
             let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() { continue; }
+            if f.read_to_string(&mut buf).is_err() {
+                continue;
+            }
             for line in buf.lines() {
                 if re.as_ref().map_or(true, |r| r.is_match(line)) {
                     println!("{}", line);

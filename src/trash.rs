@@ -12,11 +12,19 @@
 //!   rxt trash --clean 30            # 清理 30 天前的
 //!   rxt trash --purge               # 清空回收站
 
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn run(paths: &[String], list: bool, restore: Option<&str>, restore_to: Option<&str>, clean_days: Option<u64>, purge: bool, json: bool) -> anyhow::Result<()> {
+pub fn run(
+    paths: &[String],
+    list: bool,
+    restore: Option<&str>,
+    restore_to: Option<&str>,
+    clean_days: Option<u64>,
+    purge: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     let store = trash_store()?;
 
     if purge {
@@ -45,7 +53,10 @@ pub fn run(paths: &[String], list: bool, restore: Option<&str>, restore_to: Opti
         trash_one(&store, path)?;
         count += 1;
     }
-    println!("🗑 已删除 {} 项到回收站 (rxt trash --list 查看, --restore 恢复)", count);
+    println!(
+        "🗑 已删除 {} 项到回收站 (rxt trash --list 查看, --restore 恢复)",
+        count
+    );
     Ok(())
 }
 
@@ -58,8 +69,13 @@ fn trash_store() -> anyhow::Result<PathBuf> {
 
 fn trash_one(store: &Path, target: &Path) -> anyhow::Result<()> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-    let abs = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-    let name = abs.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "unnamed".into());
+    let abs = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".into());
 
     // 回收站条目: <store>/<timestamp>_<rand>/<name>
     let id = format!("{}_{:x}", now, rand_seed());
@@ -99,7 +115,11 @@ fn do_list(store: &Path, json: bool) -> anyhow::Result<()> {
         let meta_path = entry.path().join("meta.json");
         if let Ok(content) = fs::read_to_string(&meta_path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = v
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let ts = v.get("trashed_at").and_then(|v| v.as_u64()).unwrap_or(0) as u128;
                 items.push((id, v, ts));
             }
@@ -125,9 +145,17 @@ fn do_list(store: &Path, json: bool) -> anyhow::Result<()> {
         let is_dir = m.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false);
         let orig = m.get("orig_path").and_then(|v| v.as_str()).unwrap_or("");
         let time_str = chrono::DateTime::from_timestamp_millis(*ts as i64)
-            .map(|d| d.format("%m-%d %H:%M").to_string()).unwrap_or_default();
+            .map(|d| d.format("%m-%d %H:%M").to_string())
+            .unwrap_or_default();
         let typ = if is_dir { "DIR" } else { "FILE" };
-        println!("{:<24} {:<20} {:<8} {} [{}]", id, &name[..name.len().min(20)], typ, orig, time_str);
+        println!(
+            "{:<24} {:<20} {:<8} {} [{}]",
+            id,
+            &name[..name.len().min(20)],
+            typ,
+            orig,
+            time_str
+        );
     }
     println!("\n共 {} 项", items.len());
     Ok(())
@@ -138,18 +166,35 @@ fn do_restore(store: &Path, id: &str, to: Option<&str>) -> anyhow::Result<()> {
     if !entry.exists() {
         anyhow::bail!("回收站无此 ID: {} (用 --list 查看)", id);
     }
-    let meta: serde_json::Value = serde_json::from_str(&fs::read_to_string(entry.join("meta.json"))?)?;
-    let name = meta.get("name").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("meta 损坏"))?;
-    let orig = meta.get("orig_path").and_then(|v| v.as_str()).unwrap_or(name);
-    let dest_dir = to.map(PathBuf::from).unwrap_or_else(|| Path::new(orig).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")));
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(entry.join("meta.json"))?)?;
+    let name = meta
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("meta 损坏"))?;
+    let orig = meta
+        .get("orig_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or(name);
+    let dest_dir = to.map(PathBuf::from).unwrap_or_else(|| {
+        Path::new(orig)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    });
     fs::create_dir_all(&dest_dir)?;
     let dest = dest_dir.join(name);
 
     // 恢复(移动)
     let src = entry.join(name);
     if fs::rename(&src, &dest).is_err() {
-        if src.is_dir() { copy_dir(&src, &dest)?; let _ = fs::remove_dir_all(&src); }
-        else { fs::copy(&src, &dest)?; let _ = fs::remove_file(&src); }
+        if src.is_dir() {
+            copy_dir(&src, &dest)?;
+            let _ = fs::remove_dir_all(&src);
+        } else {
+            fs::copy(&src, &dest)?;
+            let _ = fs::remove_file(&src);
+        }
     }
     // 清理空条目
     let _ = fs::remove_dir_all(&entry);
@@ -158,7 +203,8 @@ fn do_restore(store: &Path, id: &str, to: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn do_clean(store: &Path, days: u64) -> anyhow::Result<()> {
-    let cutoff = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() - (days as u128) * 86400 * 1000;
+    let cutoff =
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() - (days as u128) * 86400 * 1000;
     let mut removed = 0;
     for entry in fs::read_dir(store)? {
         let entry = entry?;
@@ -180,7 +226,9 @@ fn do_clean(store: &Path, days: u64) -> anyhow::Result<()> {
 fn do_purge(store: &Path) -> anyhow::Result<()> {
     let mut count = 0;
     for entry in fs::read_dir(store)? {
-        if entry?.path().is_dir() { count += 1; }
+        if entry?.path().is_dir() {
+            count += 1;
+        }
     }
     // 清空但保留 store 目录
     for entry in fs::read_dir(store)? {
@@ -196,15 +244,21 @@ fn copy_dir(src: &Path, dst: &Path) -> anyhow::Result<()> {
         let entry = entry?;
         let f = entry.path();
         let t = dst.join(entry.file_name());
-        if f.is_dir() { copy_dir(&f, &t)?; }
-        else { fs::copy(&f, &t)?; }
+        if f.is_dir() {
+            copy_dir(&f, &t)?;
+        } else {
+            fs::copy(&f, &t)?;
+        }
     }
     Ok(())
 }
 
 /// 简易种子(用时间 + pid)
 fn rand_seed() -> u64 {
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0);
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
     let pid = std::process::id() as u64;
     t.wrapping_mul(pid).wrapping_add(0x9E3779B97F4A7C15)
 }

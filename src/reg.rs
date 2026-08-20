@@ -13,8 +13,19 @@
 
 use std::process::Command;
 
-pub fn run(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_name: Option<&str>, value: Option<&str>, list: Option<&str>, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
-    if let Some(rc) = remote { return run_remote(get, set, delete, value_name, value, list, rc); }
+pub fn run(
+    get: Option<&str>,
+    set: Option<&str>,
+    delete: Option<&str>,
+    value_name: Option<&str>,
+    value: Option<&str>,
+    list: Option<&str>,
+    json: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
+    if let Some(rc) = remote {
+        return run_remote(get, set, delete, value_name, value, list, rc);
+    }
     if cfg!(not(target_os = "windows")) {
         anyhow::bail!("reg 命令仅支持 Windows");
     }
@@ -37,7 +48,9 @@ pub fn run(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_nam
 
 fn do_get(path: &str, name: Option<&str>, json: bool) -> anyhow::Result<()> {
     let nm = name.unwrap_or(""); // 空 = 默认值
-    let out = Command::new("reg").args(["query", path, "/v", nm]).output()
+    let out = Command::new("reg")
+        .args(["query", path, "/v", nm])
+        .output()
         .map_err(|e| anyhow::anyhow!("reg.exe 调用失败: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -76,7 +89,9 @@ fn do_get(path: &str, name: Option<&str>, json: bool) -> anyhow::Result<()> {
 }
 
 fn do_list(path: &str, json: bool) -> anyhow::Result<()> {
-    let out = Command::new("reg").args(["query", path]).output()
+    let out = Command::new("reg")
+        .args(["query", path])
+        .output()
         .map_err(|e| anyhow::anyhow!("reg.exe 调用失败: {e}"))?;
     if !out.status.success() {
         anyhow::bail!("读取失败: {}", String::from_utf8_lossy(&out.stderr).trim());
@@ -87,7 +102,9 @@ fn do_list(path: &str, json: bool) -> anyhow::Result<()> {
     let mut section = "";
     for line in text.lines() {
         let l = line.trim_end();
-        if l.is_empty() { continue; }
+        if l.is_empty() {
+            continue;
+        }
         if l.ends_with("values:") || l.ends_with("子项:") {
             section = "values";
             continue;
@@ -112,7 +129,9 @@ fn do_list(path: &str, json: bool) -> anyhow::Result<()> {
         } else if section == "subkeys" || trimmed.starts_with("HKEY") {
             // 子键行(完整路径)
             let key = trimmed.rsplit('\\').next().unwrap_or(trimmed).to_string();
-            if !key.contains("search") { subkeys.push(key); }
+            if !key.contains("search") {
+                subkeys.push(key);
+            }
         }
     }
     if json {
@@ -149,10 +168,18 @@ fn do_set(path: &str, name: Option<&str>, value: &str) -> anyhow::Result<()> {
     } else {
         ("REG_SZ", value.to_string())
     };
-    let out = Command::new("reg").args(["add", path, "/v", nm, "/t", t, "/d", &v, "/f"]).output()
+    let out = Command::new("reg")
+        .args(["add", path, "/v", nm, "/t", t, "/d", &v, "/f"])
+        .output()
         .map_err(|e| anyhow::anyhow!("reg.exe 调用失败: {e}"))?;
     if out.status.success() {
-        println!("✓ 已设置 {}\\{} = {} ({})", path, if nm.is_empty() {"(默认)"} else {nm}, v, t);
+        println!(
+            "✓ 已设置 {}\\{} = {} ({})",
+            path,
+            if nm.is_empty() { "(默认)" } else { nm },
+            v,
+            t
+        );
         Ok(())
     } else {
         anyhow::bail!("写入失败: {}", String::from_utf8_lossy(&out.stderr).trim())
@@ -161,10 +188,13 @@ fn do_set(path: &str, name: Option<&str>, value: &str) -> anyhow::Result<()> {
 
 fn do_delete(path: &str, name: Option<&str>) -> anyhow::Result<()> {
     let out = if let Some(nm) = name {
-        Command::new("reg").args(["delete", path, "/v", nm, "/f"]).output()
+        Command::new("reg")
+            .args(["delete", path, "/v", nm, "/f"])
+            .output()
     } else {
         Command::new("reg").args(["delete", path, "/f"]).output()
-    }.map_err(|e| anyhow::anyhow!("reg.exe 调用失败: {e}"))?;
+    }
+    .map_err(|e| anyhow::anyhow!("reg.exe 调用失败: {e}"))?;
     if out.status.success() {
         println!("✓ 已删除 {}\\{}", path, name.unwrap_or("(整个键)"));
         Ok(())
@@ -173,14 +203,36 @@ fn do_delete(path: &str, name: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-fn run_remote(get: Option<&str>, set: Option<&str>, delete: Option<&str>, value_name: Option<&str>, value: Option<&str>, list: Option<&str>, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
-    if !rc.is_windows() { println!("远程 reg 命令仅支持 Windows 目标"); return Ok(()); }
+fn run_remote(
+    get: Option<&str>,
+    set: Option<&str>,
+    delete: Option<&str>,
+    value_name: Option<&str>,
+    value: Option<&str>,
+    list: Option<&str>,
+    rc: &crate::remote::RemoteChannel,
+) -> anyhow::Result<()> {
+    if !rc.is_windows() {
+        println!("远程 reg 命令仅支持 Windows 目标");
+        return Ok(());
+    }
     let vn = value_name.unwrap_or("(Default)");
-    let cmd = if let Some(g) = get { format!("reg query \"{}\" /v \"{}\"", g, vn) }
-    else if let Some(s) = set { format!("reg add \"{}\" /v \"{}\" /t REG_SZ /d \"{}\" /f", s, vn, value.unwrap_or("")) }
-    else if let Some(d) = delete { format!("reg delete \"{}\" /v \"{}\" /f", d, vn) }
-    else if let Some(l) = list { format!("reg query \"{}\"", l) }
-    else { return Ok(()); };
+    let cmd = if let Some(g) = get {
+        format!("reg query \"{}\" /v \"{}\"", g, vn)
+    } else if let Some(s) = set {
+        format!(
+            "reg add \"{}\" /v \"{}\" /t REG_SZ /d \"{}\" /f",
+            s,
+            vn,
+            value.unwrap_or("")
+        )
+    } else if let Some(d) = delete {
+        format!("reg delete \"{}\" /v \"{}\" /f", d, vn)
+    } else if let Some(l) = list {
+        format!("reg query \"{}\"", l)
+    } else {
+        return Ok(());
+    };
     println!("{}", rc.exec(&cmd)?.trim_end());
     Ok(())
 }

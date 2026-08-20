@@ -17,7 +17,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_build: bool) -> anyhow::Result<()> {
+pub fn run(
+    repo: Option<&str>,
+    check_only: bool,
+    features: Option<&str>,
+    no_build: bool,
+) -> anyhow::Result<()> {
     // 1. 定位仓库
     let repo_path = find_repo(repo)?;
     println!("📦 仓库: {}", repo_path.display());
@@ -31,9 +36,13 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
 
     // 3. pull
     println!("⬇  git pull...");
-    let pull = Command::new("git").current_dir(&repo_path)
+    let pull = Command::new("git")
+        .current_dir(&repo_path)
         .args(["pull", "--ff-only"])
-        .env("GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes")
+        .env(
+            "GIT_SSH_COMMAND",
+            "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
+        )
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -46,9 +55,11 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
 
     if check_only {
         if updated {
-            println!("\n✨ 有更新: {}..{}",
+            println!(
+                "\n✨ 有更新: {}..{}",
                 &old_head.map(|h| h[..8].to_string()).unwrap_or_default(),
-                &new_head.map(|h| h[..8].to_string()).unwrap_or_default());
+                &new_head.map(|h| h[..8].to_string()).unwrap_or_default()
+            );
             let log = git_in(&repo_path, &["log", "--oneline", "-5"]).unwrap_or_default();
             println!("最近提交:\n{}", log);
             println!("\n(仅检查模式,未编译。去掉 --check 真正升级)");
@@ -70,20 +81,24 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
         // 4. 编译
         let feats = determine_features(&repo_path, features);
         let mut args = vec!["build", "--release"];
-        let no_default = feats.as_deref().map(|f| {
-            if f.is_empty() {
-                args.push("--no-default-features");
-                true
-            } else {
-                args.push("--no-default-features");
-                args.push("--features");
-                args.push(f);
-                true
-            }
-        }).is_some();
+        let no_default = feats
+            .as_deref()
+            .map(|f| {
+                if f.is_empty() {
+                    args.push("--no-default-features");
+                    true
+                } else {
+                    args.push("--no-default-features");
+                    args.push("--features");
+                    args.push(f);
+                    true
+                }
+            })
+            .is_some();
         let _ = no_default;
         println!("🔨 cargo {} (在 {})", args.join(" "), repo_path.display());
-        let build = Command::new("cargo").current_dir(&repo_path)
+        let build = Command::new("cargo")
+            .current_dir(&repo_path)
             .args(&args)
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
@@ -98,7 +113,13 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
     let exe_name = if cfg!(windows) { "rxt.exe" } else { "rxt" };
     let target_root = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .map(|p| if p.is_absolute() { p } else { repo_path.join(p) })
+        .map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                repo_path.join(p)
+            }
+        })
         .unwrap_or_else(|| repo_path.join("target"));
     let built = target_root.join("release").join(exe_name);
     if !built.exists() {
@@ -126,9 +147,9 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
             anyhow::bail!("复制新版本失败，已恢复旧版本: {e}");
         }
         if let Err(e) = crate::sign::sign_path(&cur, false) {
-            restore_binary(&cur, &bak).map_err(|restore| anyhow::anyhow!(
-                "新版本签名失败（{e}），恢复旧版本也失败: {restore}"
-            ))?;
+            restore_binary(&cur, &bak).map_err(|restore| {
+                anyhow::anyhow!("新版本签名失败（{e}），恢复旧版本也失败: {restore}")
+            })?;
             anyhow::bail!("新版本签名失败，已恢复旧版本: {e}");
         }
         // 留 .old,下次启动后可清(或留给系统)
@@ -159,9 +180,11 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
     };
     println!("\n🎉 升级完成! {}", ver.trim());
     if updated {
-        println!("   {} -> {}",
+        println!(
+            "   {} -> {}",
             &old_head.map(|h| h[..8].to_string()).unwrap_or_default(),
-            &new_head.map(|h| h[..8].to_string()).unwrap_or_default());
+            &new_head.map(|h| h[..8].to_string()).unwrap_or_default()
+        );
     }
     Ok(())
 }
@@ -181,10 +204,7 @@ fn find_repo(explicit: Option<&str>) -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from(p));
     }
     // 常见位置扫描
-    let candidates = [
-        r"G:\codex-AI-tools\ws\rxt",
-        r"C:\codex-AI-tools\ws\rxt",
-    ];
+    let candidates = [r"G:\codex-AI-tools\ws\rxt", r"C:\codex-AI-tools\ws\rxt"];
     for c in &candidates {
         if Path::new(c).join("Cargo.toml").exists() {
             return Ok(PathBuf::from(c));
@@ -211,7 +231,10 @@ fn determine_features(repo: &Path, explicit: Option<&str>) -> Option<String> {
         return Some(f.to_string());
     }
     // 自动: 检查 gcc 是否可用
-    let has_gcc = Command::new(if cfg!(windows) {"gcc"} else {"cc"}).arg("--version").output().is_ok()
+    let has_gcc = Command::new(if cfg!(windows) { "gcc" } else { "cc" })
+        .arg("--version")
+        .output()
+        .is_ok()
         || Command::new("gcc").arg("--version").output().is_ok();
     if has_gcc {
         None // 用默认 feature

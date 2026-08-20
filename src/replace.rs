@@ -1,10 +1,10 @@
 //! 块替换 — 格式保持版
 //! 按文件块做结构化多行替换，不破坏换行符/BOM
 
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
-use crate::signature::{FileSignature, to_utf8_lf, apply_format};
+use crate::signature::{apply_format, to_utf8_lf, FileSignature};
 
 /// 块替换 — 按文件块做结构化多行替换
 pub fn run(
@@ -22,7 +22,7 @@ pub fn run(
         fs::read(target)?
     };
     let sig = FileSignature::detect(&raw);
-    
+
     // 转为内部 UTF-8 + LF
     let file_text = to_utf8_lf(&raw, &sig);
 
@@ -30,7 +30,7 @@ pub fn run(
     let old_raw = fs::read(old_file)?;
     let old_sig = FileSignature::detect(&old_raw);
     let old_text = to_utf8_lf(&old_raw, &old_sig);
-    
+
     let old_lines: Vec<&str> = old_text.lines().collect();
     let file_lines: Vec<&str> = file_text.lines().collect();
 
@@ -41,7 +41,7 @@ pub fn run(
     // Split new content into lines
     let new_lines: Vec<&str> = match new_content {
         Some(s) => s.lines().collect(),
-        None => vec![],  // delete mode
+        None => vec![], // delete mode
     };
 
     // Find all occurrences of old block
@@ -97,9 +97,17 @@ pub fn run(
     }
 
     if preview {
-        println!("\n  Preview: {} occurrences, {} -> {} lines{}",
-            total_matches, old_lines.len(), new_lines.len(),
-            if new_lines.is_empty() { " (delete)" } else { "" });
+        println!(
+            "\n  Preview: {} occurrences, {} -> {} lines{}",
+            total_matches,
+            old_lines.len(),
+            new_lines.len(),
+            if new_lines.is_empty() {
+                " (delete)"
+            } else {
+                ""
+            }
+        );
         return Ok(());
     }
 
@@ -110,15 +118,20 @@ pub fn run(
     } else {
         output
     };
-    
+
     let formatted = apply_format(&final_out, &sig);
     if let Some(remote) = remote {
         remote.write_file(target, formatted.as_bytes())?;
     } else {
         fs::write(target, formatted.as_bytes())?;
     }
-    println!("  Replaced block ({} occurrence{}) in {} (preserved: {} {})",
-        total_matches, if total_matches > 1 { "s" } else { "" },
-        target.display(), sig.encoding, sig.line_ending);
+    println!(
+        "  Replaced block ({} occurrence{}) in {} (preserved: {} {})",
+        total_matches,
+        if total_matches > 1 { "s" } else { "" },
+        target.display(),
+        sig.encoding,
+        sig.line_ending
+    );
     Ok(())
 }

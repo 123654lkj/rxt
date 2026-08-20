@@ -14,8 +14,17 @@
 
 use std::process::Command;
 
-pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running: bool, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
-    if let Some(rc) = remote { return run_remote(name, start, stop, running, rc); }
+pub fn run(
+    name: Option<&str>,
+    start: Option<&str>,
+    stop: Option<&str>,
+    running: bool,
+    json: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
+    if let Some(rc) = remote {
+        return run_remote(name, start, stop, running, rc);
+    }
     if cfg!(not(target_os = "windows")) {
         anyhow::bail!("service 命令仅支持 Windows");
     }
@@ -29,8 +38,10 @@ pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running:
     }
 
     // 列表
-    let out = Command::new("sc").args(["query", "type=", "service", "state=", "all"])
-        .output().map_err(|e| anyhow::anyhow!("sc.exe 调用失败: {e}"))?;
+    let out = Command::new("sc")
+        .args(["query", "type=", "service", "state=", "all"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("sc.exe 调用失败: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let svcs = parse_services(&text);
 
@@ -43,9 +54,14 @@ pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running:
     }
 
     if json {
-        let arr: Vec<_> = filtered.iter().map(|s| serde_json::json!({
-            "name": s.name, "display": s.display, "state": s.state, "pid": s.pid,
-        })).collect();
+        let arr: Vec<_> = filtered
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name, "display": s.display, "state": s.state, "pid": s.pid,
+                })
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&arr)?);
         return Ok(());
     }
@@ -53,7 +69,11 @@ pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running:
     println!("{:<32} {:<12} {:>7} {}", "NAME", "STATE", "PID", "DISPLAY");
     println!("{}", "-".repeat(90));
     for s in &filtered {
-        let pid = if s.pid > 0 { s.pid.to_string() } else { "-".into() };
+        let pid = if s.pid > 0 {
+            s.pid.to_string()
+        } else {
+            "-".into()
+        };
         println!("{:<32} {:<12} {:>7} {}", s.name, s.state, pid, s.display);
     }
     println!("\n共 {} 个服务", filtered.len());
@@ -61,7 +81,9 @@ pub fn run(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running:
 }
 
 fn control(svc: &str, action: &str) -> anyhow::Result<()> {
-    let out = Command::new("sc").args([action, svc]).output()
+    let out = Command::new("sc")
+        .args([action, svc])
+        .output()
         .map_err(|e| anyhow::anyhow!("sc.exe 调用失败: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -85,7 +107,7 @@ fn query_state(svc: &str) -> anyhow::Result<String> {
         let line = line.trim();
         if line.to_lowercase().starts_with("state") {
             if let Some(idx) = line.find(':') {
-                let rest = line[idx+1..].trim();
+                let rest = line[idx + 1..].trim();
                 // "4 RUNNING (stop-pending, ...)" 取冒号后第一段
                 return Ok(rest.split_whitespace().nth(1).unwrap_or(rest).to_string());
             }
@@ -110,12 +132,19 @@ fn parse_services(text: &str) -> Vec<Service> {
     //         STATE              : 4 RUNNING (STOPPABLE...)
     //                             (pid) 或无
     let mut svcs = Vec::new();
-    let mut cur = Service { name: String::new(), display: String::new(), state: String::new(), pid: 0 };
+    let mut cur = Service {
+        name: String::new(),
+        display: String::new(),
+        state: String::new(),
+        pid: 0,
+    };
     let mut have = false;
     for line in text.lines() {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("SERVICE_NAME:") {
-            if have { svcs.push(std::mem::take(&mut cur)); }
+            if have {
+                svcs.push(std::mem::take(&mut cur));
+            }
             cur.name = rest.trim().to_string();
             have = true;
         } else if let Some(rest) = l.strip_prefix("DISPLAY_NAME:") {
@@ -123,34 +152,60 @@ fn parse_services(text: &str) -> Vec<Service> {
         } else if l.to_lowercase().contains("state") {
             // "STATE              : 4  RUNNING  (STOPPABLE...)"
             if let Some(idx) = l.find(':') {
-                let after = l[idx+1..].trim();
+                let after = l[idx + 1..].trim();
                 cur.state = after.split_whitespace().nth(1).unwrap_or(after).to_string();
             }
         } else if l.to_lowercase().contains("pid") {
             // 注意 sc query 默认不含 pid;sc queryex 才有。这里兼容
             if let Some(idx) = l.find(':') {
-                let after = l[idx+1..].trim();
-                if let Ok(pid) = after.split_whitespace().next().unwrap_or("0").parse::<u32>() {
+                let after = l[idx + 1..].trim();
+                if let Ok(pid) = after
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("0")
+                    .parse::<u32>()
+                {
                     cur.pid = pid;
                 }
             }
         }
     }
-    if have { svcs.push(cur); }
+    if have {
+        svcs.push(cur);
+    }
     svcs
 }
 
-fn run_remote(name: Option<&str>, start: Option<&str>, stop: Option<&str>, running: bool, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+fn run_remote(
+    name: Option<&str>,
+    start: Option<&str>,
+    stop: Option<&str>,
+    running: bool,
+    rc: &crate::remote::RemoteChannel,
+) -> anyhow::Result<()> {
     let cmd = if rc.is_windows() {
-        if let Some(n) = start { format!("sc.exe start {}", n) }
-        else if let Some(n) = stop { format!("sc.exe stop {}", n) }
-        else if let Some(n) = name { format!("sc.exe query {}", n) }
-        else { "sc.exe query type= service state= all".into() }
+        if let Some(n) = start {
+            format!("sc.exe start {}", n)
+        } else if let Some(n) = stop {
+            format!("sc.exe stop {}", n)
+        } else if let Some(n) = name {
+            format!("sc.exe query {}", n)
+        } else {
+            "sc.exe query type= service state= all".into()
+        }
     } else {
-        if let Some(n) = start { format!("systemctl start {}", n) }
-        else if let Some(n) = stop { format!("systemctl stop {}", n) }
-        else if let Some(n) = name { format!("systemctl status {}", n) }
-        else { format!("systemctl list-units --type=service {}", if running { "--state=running" } else { "" }) }
+        if let Some(n) = start {
+            format!("systemctl start {}", n)
+        } else if let Some(n) = stop {
+            format!("systemctl stop {}", n)
+        } else if let Some(n) = name {
+            format!("systemctl status {}", n)
+        } else {
+            format!(
+                "systemctl list-units --type=service {}",
+                if running { "--state=running" } else { "" }
+            )
+        }
     };
     println!("{}", rc.exec(&cmd)?.trim_end());
     Ok(())

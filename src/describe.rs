@@ -3,8 +3,8 @@
 //! v0.4.0: 改成从 clap 反射自动生成, 加命令无需手写.
 //! 之前是 36 个手写 commands.push, 极易漂移.
 
-use serde_json::{json, Value};
 use clap::{Arg, ArgAction, Command, CommandFactory};
+use serde_json::{json, Value};
 
 pub fn run() -> anyhow::Result<()> {
     let schema = build_schema();
@@ -94,12 +94,20 @@ fn infer_type(a: &Arg) -> &'static str {
     }
     // help/version 也是 bool
     let id = a.get_id().to_string();
-    if id == "help" || id == "version" { return "bool"; }
+    if id == "help" || id == "version" {
+        return "bool";
+    }
     // 数值: 通过 value_parser 的类型名判断
     let parser = a.get_value_parser();
     let type_name = format!("{:?}", parser);
-    if type_name.contains("usize") || type_name.contains("u64") || type_name.contains("i64")
-        || type_name.contains("u32") || type_name.contains("i32") { return "number"; }
+    if type_name.contains("usize")
+        || type_name.contains("u64")
+        || type_name.contains("i64")
+        || type_name.contains("u32")
+        || type_name.contains("i32")
+    {
+        return "number";
+    }
     // 默认: 字符串(位置参数 String, 或 Option<String>/Option<PathBuf> flag)
     "Option<String>"
 }

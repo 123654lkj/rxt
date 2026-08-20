@@ -2,12 +2,22 @@
 //! RXT 内部统一使用 UTF-8 + LF，读入时自动转换
 //! v0.4.0: 真实文件行号 + token 预算截断
 
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
-use crate::signature::{FileSignature, to_utf8_lf};
+use crate::signature::{to_utf8_lf, FileSignature};
 
-pub fn run(path: &Path, encoding: Option<String>, number: bool, head: Option<usize>, tail: Option<usize>, lines: Option<String>, budget: Option<usize>, json_output: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+pub fn run(
+    path: &Path,
+    encoding: Option<String>,
+    number: bool,
+    head: Option<usize>,
+    tail: Option<usize>,
+    lines: Option<String>,
+    budget: Option<usize>,
+    json_output: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
     let raw = if let Some(remote) = remote {
         remote.read_file(path)?
     } else {
@@ -23,10 +33,10 @@ pub fn run(path: &Path, encoding: Option<String>, number: bool, head: Option<usi
                 let (text, _, _) = encoding_rs::GBK.decode(&raw);
                 text.to_string().replace("\r\n", "\n").replace("\r", "\n")
             }
-            "utf-8" | "utf8" => {
-                String::from_utf8_lossy(&raw).to_string().replace("\r\n", "\n")
-            }
-            _ => to_utf8_lf(&raw, &sig)
+            "utf-8" | "utf8" => String::from_utf8_lossy(&raw)
+                .to_string()
+                .replace("\r\n", "\n"),
+            _ => to_utf8_lf(&raw, &sig),
         }
     } else {
         to_utf8_lf(&raw, &sig)
@@ -72,7 +82,10 @@ pub fn run(path: &Path, encoding: Option<String>, number: bool, head: Option<usi
         }
     }
     if est_tokens == 0 {
-        est_tokens = show_lines.iter().map(|(_, t)| crate::common::approx_tokens(t)).sum();
+        est_tokens = show_lines
+            .iter()
+            .map(|(_, t)| crate::common::approx_tokens(t))
+            .sum();
     }
 
     if json_output {
@@ -98,8 +111,15 @@ pub fn run(path: &Path, encoding: Option<String>, number: bool, head: Option<usi
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
         // 人类可读输出
-        eprintln!("  encoding: {} | line_ending: {} | bom: {} | indent: {} | lines: {} | bytes: {}", 
-                  sig.encoding, sig.line_ending, sig.has_bom, sig.indent, total_lines, raw.len());
+        eprintln!(
+            "  encoding: {} | line_ending: {} | bom: {} | indent: {} | lines: {} | bytes: {}",
+            sig.encoding,
+            sig.line_ending,
+            sig.has_bom,
+            sig.indent,
+            total_lines,
+            raw.len()
+        );
 
         for (line_no, line) in show_lines.iter() {
             if number {
@@ -127,9 +147,22 @@ fn parse_line_range<'a>(lines: &'a [(usize, &'a str)], spec: &str) -> Vec<(usize
     if let Some(range) = spec.split_once('-') {
         let start = range.0.trim();
         let end = range.1.trim();
-        let s = if start.is_empty() { 0 } else { start.parse::<usize>().unwrap_or(1).saturating_sub(1) };
-        let e = if end.is_empty() { total } else { end.parse::<usize>().unwrap_or(total).min(total) };
-        lines.iter().skip(s).take(e.saturating_sub(s)).cloned().collect()
+        let s = if start.is_empty() {
+            0
+        } else {
+            start.parse::<usize>().unwrap_or(1).saturating_sub(1)
+        };
+        let e = if end.is_empty() {
+            total
+        } else {
+            end.parse::<usize>().unwrap_or(total).min(total)
+        };
+        lines
+            .iter()
+            .skip(s)
+            .take(e.saturating_sub(s))
+            .cloned()
+            .collect()
     } else if let Ok(n) = spec.parse::<usize>() {
         // Single line number
         if n >= 1 && n <= total {

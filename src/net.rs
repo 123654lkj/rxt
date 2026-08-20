@@ -15,8 +15,17 @@
 use std::net::ToSocketAddrs;
 use std::process::Command;
 
-pub fn run(conn: Option<&str>, resolve: Option<&str>, route: bool, port: Option<&str>, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
-    if let Some(rc) = remote { return run_remote(conn, route, port, rc); }
+pub fn run(
+    conn: Option<&str>,
+    resolve: Option<&str>,
+    route: bool,
+    port: Option<&str>,
+    json: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
+    if let Some(rc) = remote {
+        return run_remote(conn, route, port, rc);
+    }
     if let Some(host) = resolve {
         return do_resolve(host, json);
     }
@@ -35,15 +44,21 @@ pub fn run(conn: Option<&str>, resolve: Option<&str>, route: bool, port: Option<
 fn do_resolve(host: &str, json: bool) -> anyhow::Result<()> {
     // 加端口触发 DNS(用 :80 占位)
     let addr = format!("{}:80", host.trim_end_matches(':'));
-    let addrs: Vec<_> = addr.to_socket_addrs()
+    let addrs: Vec<_> = addr
+        .to_socket_addrs()
         .map_err(|e| anyhow::anyhow!("DNS 解析失败 {}: {}", host, e))?
         .collect();
     let ips: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
     if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"host": host, "addresses": ips}))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({"host": host, "addresses": ips}))?
+        );
     } else {
         println!("{} ->", host);
-        for ip in &ips { println!("  {}", ip); }
+        for ip in &ips {
+            println!("  {}", ip);
+        }
     }
     Ok(())
 }
@@ -51,7 +66,9 @@ fn do_resolve(host: &str, json: bool) -> anyhow::Result<()> {
 fn do_conn(state_filter: &str, json: bool) -> anyhow::Result<()> {
     if cfg!(target_os = "windows") {
         // netstat -ano
-        let out = Command::new("netstat").args(["-ano"]).output()
+        let out = Command::new("netstat")
+            .args(["-ano"])
+            .output()
             .map_err(|e| anyhow::anyhow!("netstat 调用失败: {e}"))?;
         let text = String::from_utf8_lossy(&out.stdout);
         parse_netstat(&text, state_filter, json)
@@ -67,16 +84,28 @@ fn parse_netstat(text: &str, state_filter: &str, json: bool) -> anyhow::Result<(
     let mut in_data = false;
     for line in text.lines() {
         let l = line.trim();
-        if l.starts_with("Proto") { in_data = true; continue; }
-        if !in_data || l.is_empty() { continue; }
+        if l.starts_with("Proto") {
+            in_data = true;
+            continue;
+        }
+        if !in_data || l.is_empty() {
+            continue;
+        }
         let parts: Vec<&str> = l.split_whitespace().collect();
-        if parts.len() < 5 { continue; }
+        if parts.len() < 5 {
+            continue;
+        }
         let proto = parts[0];
-        if proto != "TCP" && proto != "TCPv6" { continue; }
+        if proto != "TCP" && proto != "TCPv6" {
+            continue;
+        }
         let local = parts.get(1).unwrap_or(&"");
         let remote = parts.get(2).unwrap_or(&"");
         let state = parts.get(3).unwrap_or(&"");
-        let pid = parts.get(4).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let pid = parts
+            .get(4)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
         conns.push(Conn {
             proto: proto.to_string(),
             local: local.to_string(),
@@ -95,10 +124,16 @@ fn parse_netstat(text: &str, state_filter: &str, json: bool) -> anyhow::Result<(
         })).collect();
         println!("{}", serde_json::to_string_pretty(&arr)?);
     } else {
-        println!("{:<6} {:<24} {:<24} {:<14} {:>6}", "PROTO", "LOCAL", "REMOTE", "STATE", "PID");
+        println!(
+            "{:<6} {:<24} {:<24} {:<14} {:>6}",
+            "PROTO", "LOCAL", "REMOTE", "STATE", "PID"
+        );
         println!("{}", "-".repeat(80));
         for c in &conns {
-            println!("{:<6} {:<24} {:<24} {:<14} {:>6}", c.proto, c.local, c.remote, c.state, c.pid);
+            println!(
+                "{:<6} {:<24} {:<24} {:<14} {:>6}",
+                c.proto, c.local, c.remote, c.state, c.pid
+            );
         }
         println!("\n共 {} 条连接", conns.len());
     }
@@ -108,22 +143,33 @@ fn parse_netstat(text: &str, state_filter: &str, json: bool) -> anyhow::Result<(
 fn parse_proc_tcp(text: &str, state_filter: &str, json: bool) -> anyhow::Result<()> {
     let state_map = |s: &str| -> &str {
         match s {
-            "01" => "ESTABLISHED", "02" => "SYN_SENT", "03" => "SYN_RECV",
-            "04" => "FIN_WAIT1", "05" => "FIN_WAIT2", "06" => "TIME_WAIT",
-            "0A" => "LISTEN", "08" => "CLOSE_WAIT", _ => "UNKNOWN",
+            "01" => "ESTABLISHED",
+            "02" => "SYN_SENT",
+            "03" => "SYN_RECV",
+            "04" => "FIN_WAIT1",
+            "05" => "FIN_WAIT2",
+            "06" => "TIME_WAIT",
+            "0A" => "LISTEN",
+            "08" => "CLOSE_WAIT",
+            _ => "UNKNOWN",
         }
     };
     let mut conns: Vec<Conn> = Vec::new();
     for line in text.lines().skip(1) {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 4 { continue; }
+        if f.len() < 4 {
+            continue;
+        }
         let local = f[1].to_string();
         let remote = f[2].to_string();
         let st_code = f[3];
         let pid = f.get(7).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
         conns.push(Conn {
-            proto: "TCP".into(), local: hex_ip(&local),
-            remote: hex_ip(&remote), state: state_map(st_code).to_string(), pid,
+            proto: "TCP".into(),
+            local: hex_ip(&local),
+            remote: hex_ip(&remote),
+            state: state_map(st_code).to_string(),
+            pid,
         });
     }
     let filt = state_filter.to_uppercase();
@@ -137,7 +183,10 @@ fn parse_proc_tcp(text: &str, state_filter: &str, json: bool) -> anyhow::Result<
         println!("{}", serde_json::to_string_pretty(&arr)?);
     } else {
         for c in &conns {
-            println!("{:<6} {:<24} {:<24} {:<14} {:>6}", c.proto, c.local, c.remote, c.state, c.pid);
+            println!(
+                "{:<6} {:<24} {:<24} {:<14} {:>6}",
+                c.proto, c.local, c.remote, c.state, c.pid
+            );
         }
         println!("\n共 {} 条", conns.len());
     }
@@ -147,13 +196,22 @@ fn parse_proc_tcp(text: &str, state_filter: &str, json: bool) -> anyhow::Result<
 fn hex_ip(s: &str) -> String {
     // "0100007F:0050" -> "127.0.0.1:80"
     let parts: Vec<&str> = s.splitn(2, ':').collect();
-    if parts.len() != 2 { return s.to_string(); }
+    if parts.len() != 2 {
+        return s.to_string();
+    }
     let hex = parts[0];
     let port = u16::from_str_radix(parts[1], 16).unwrap_or(0);
     if hex.len() == 8 {
-        let bytes = (0..4).map(|i| u8::from_str_radix(&hex[i*2..i*2+2], 16).unwrap_or(0)).collect::<Vec<_>>();
-        format!("{}.{}.{}.{}:{}", bytes[3], bytes[2], bytes[1], bytes[0], port)
-    } else { s.to_string() }
+        let bytes = (0..4)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0))
+            .collect::<Vec<_>>();
+        format!(
+            "{}.{}.{}.{}:{}",
+            bytes[3], bytes[2], bytes[1], bytes[0], port
+        )
+    } else {
+        s.to_string()
+    }
 }
 
 fn do_route(json: bool) -> anyhow::Result<()> {
@@ -169,28 +227,47 @@ fn do_route(json: bool) -> anyhow::Result<()> {
 }
 
 fn do_port(port: &str) -> anyhow::Result<()> {
-    let p: u16 = port.parse().map_err(|_| anyhow::anyhow!("无效端口: {}", port))?;
+    let p: u16 = port
+        .parse()
+        .map_err(|_| anyhow::anyhow!("无效端口: {}", port))?;
     // 检查本地是否监听
     if cfg!(target_os = "windows") {
-        let out = Command::new("netstat").args(["-ano", "-p", "TCP"]).output()?;
+        let out = Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .output()?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let listen: Vec<&str> = text.lines().filter(|l| {
-            let parts: Vec<&str> = l.split_whitespace().collect();
-            parts.len() >= 4 && parts[3].eq_ignore_ascii_case("LISTENING")
-                && parts.iter().any(|f| f.ends_with(&format!(":{}", p)))
-        }).collect();
+        let listen: Vec<&str> = text
+            .lines()
+            .filter(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                parts.len() >= 4
+                    && parts[3].eq_ignore_ascii_case("LISTENING")
+                    && parts.iter().any(|f| f.ends_with(&format!(":{}", p)))
+            })
+            .collect();
         if listen.is_empty() {
             println!("端口 {} 无监听", p);
         } else {
             println!("端口 {} 正在监听 ({} 条)", p, listen.len());
-            for l in listen { println!("  {}", l.trim()); }
+            for l in listen {
+                println!("  {}", l.trim());
+            }
         }
     } else {
         let out = Command::new("ss").args(["-tlnp"]).output()?;
         let text = String::from_utf8_lossy(&out.stdout);
-        let hit: Vec<&str> = text.lines().filter(|l| l.contains(&format!(":{}", p))).collect();
-        if hit.is_empty() { println!("端口 {} 无监听", p); }
-        else { println!("端口 {} 监听中:", p); for l in hit { println!("  {}", l); } }
+        let hit: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(&format!(":{}", p)))
+            .collect();
+        if hit.is_empty() {
+            println!("端口 {} 无监听", p);
+        } else {
+            println!("端口 {} 监听中:", p);
+            for l in hit {
+                println!("  {}", l);
+            }
+        }
     }
     Ok(())
 }
@@ -203,16 +280,40 @@ struct Conn {
     pid: u32,
 }
 
-fn run_remote(conn: Option<&str>, route: bool, port: Option<&str>, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+fn run_remote(
+    conn: Option<&str>,
+    route: bool,
+    port: Option<&str>,
+    rc: &crate::remote::RemoteChannel,
+) -> anyhow::Result<()> {
     let cmd = if let Some(c) = conn {
-        if rc.is_windows() { format!("netstat -ano | Select-String {} | Select-Object -First 20", c.to_uppercase()) }
-        else { format!("ss -tlnp | grep {}", c) }
+        if rc.is_windows() {
+            format!(
+                "netstat -ano | Select-String {} | Select-Object -First 20",
+                c.to_uppercase()
+            )
+        } else {
+            format!("ss -tlnp | grep {}", c)
+        }
     } else if route {
-        if rc.is_windows() { "route print".into() } else { "ip route".into() }
+        if rc.is_windows() {
+            "route print".into()
+        } else {
+            "ip route".into()
+        }
     } else if let Some(p) = port {
-        if rc.is_windows() { format!("netstat -ano | Select-String ':{}' | Select-Object -First 20", p) }
-        else { format!("ss -tlnp | grep :{}", p) }
-    } else { println!("远程 net 命令需要指定 --conn, --route 或 --port 参数"); return Ok(()); };
+        if rc.is_windows() {
+            format!(
+                "netstat -ano | Select-String ':{}' | Select-Object -First 20",
+                p
+            )
+        } else {
+            format!("ss -tlnp | grep :{}", p)
+        }
+    } else {
+        println!("远程 net 命令需要指定 --conn, --route 或 --port 参数");
+        return Ok(());
+    };
     println!("{}", rc.exec(&cmd)?.trim_end());
     Ok(())
 }

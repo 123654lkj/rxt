@@ -55,10 +55,20 @@ pub fn agent_capture_mode() -> bool {
     fn truthy(v: &str) -> bool {
         matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     }
-    if std::env::var("RXT_WRITE_BOM").ok().as_deref().map(truthy).unwrap_or(false) {
+    if std::env::var("RXT_WRITE_BOM")
+        .ok()
+        .as_deref()
+        .map(truthy)
+        .unwrap_or(false)
+    {
         return true;
     }
-    if std::env::var("RXT_AGENT").ok().as_deref().map(truthy).unwrap_or(false) {
+    if std::env::var("RXT_AGENT")
+        .ok()
+        .as_deref()
+        .map(truthy)
+        .unwrap_or(false)
+    {
         return true;
     }
     #[cfg(windows)]
@@ -114,9 +124,12 @@ pub fn setup_utf8_console() {
 /// 解决：Agent/PowerShell 管道捕获时把 UTF-8 中文当系统 ANSI 解码导致乱码。
 /// 关闭：`RXT_NO_BOM=1`（即使管道也不写 BOM）。
 pub fn maybe_write_bom(out: &mut dyn std::io::Write) -> std::io::Result<()> {
-    if std::env::var("RXT_NO_BOM").ok().as_deref().map(|v| {
-        matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
-    }).unwrap_or(false) {
+    if std::env::var("RXT_NO_BOM")
+        .ok()
+        .as_deref()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+    {
         return Ok(());
     }
     if agent_capture_mode() {
@@ -139,8 +152,18 @@ pub fn println_utf8(s: &str) {
 /// `pattern` supports glob: `*` `?` `[abc]`
 pub fn find_files(dir: &Path, pattern: &str, max_depth: Option<usize>) -> Vec<PathBuf> {
     let mut results = Vec::new();
-    fn walk(dir: &Path, pattern: &str, depth: usize, max_depth: Option<usize>, results: &mut Vec<PathBuf>) {
-        if let Some(md) = max_depth { if depth > md { return; } }
+    fn walk(
+        dir: &Path,
+        pattern: &str,
+        depth: usize,
+        max_depth: Option<usize>,
+        results: &mut Vec<PathBuf>,
+    ) {
+        if let Some(md) = max_depth {
+            if depth > md {
+                return;
+            }
+        }
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -163,22 +186,32 @@ pub fn find_files(dir: &Path, pattern: &str, max_depth: Option<usize>) -> Vec<Pa
 /// Simple glob matcher supporting `*`, `?`, `[abc]` (no `**`).
 pub fn glob_match(pattern: &str, name: &str) -> bool {
     fn char_classes(p: &[u8], i: &mut usize) -> bool {
-        if *i >= p.len() || p[*i] != b'[' { return false; }
+        if *i >= p.len() || p[*i] != b'[' {
+            return false;
+        }
         *i += 1;
         let negate = *i < p.len() && p[*i] == b'!';
-        if negate { *i += 1; }
+        if negate {
+            *i += 1;
+        }
         let mut found = false;
         while *i < p.len() && p[*i] != b']' {
             if *i + 2 < p.len() && p[*i + 1] == b'-' && p[*i + 2] != b']' {
                 // range
-                if p[*i] <= p[*i + 2] { found = true; }
+                if p[*i] <= p[*i + 2] {
+                    found = true;
+                }
                 *i += 3;
             } else {
-                if p[*i] != b'?' { found = true; }
+                if p[*i] != b'?' {
+                    found = true;
+                }
                 *i += 1;
             }
         }
-        if *i < p.len() { *i += 1; }  // skip ]
+        if *i < p.len() {
+            *i += 1;
+        } // skip ]
         negate ^ found
     }
     fn match_here(p: &[u8], i: &mut usize, n: &[u8], j: &mut usize) -> bool {
@@ -186,28 +219,53 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
             match p[*i] {
                 b'*' => {
                     *i += 1;
-                    while *i < p.len() && p[*i] == b'*' { *i += 1; }
-                    if *i >= p.len() { return true; }
+                    while *i < p.len() && p[*i] == b'*' {
+                        *i += 1;
+                    }
+                    if *i >= p.len() {
+                        return true;
+                    }
                     while *j <= n.len() {
-                        let save_i = *i; let save_j = *j;
-                        if match_here(p, i, n, j) { return true; }
-                        *i = save_i; *j = save_j + 1;
+                        let save_i = *i;
+                        let save_j = *j;
+                        if match_here(p, i, n, j) {
+                            return true;
+                        }
+                        *i = save_i;
+                        *j = save_j + 1;
                     }
                     return false;
                 }
-                b'?' => { *i += 1; if *j >= n.len() { return false; } *j += 1; }
-                b'[' => {
-                    let save_i = *i; let save_j = *j;
-                    if char_classes(p, i) {
-                        if *j < n.len() { *j += 1; }
-                        if match_here(p, i, n, j) { return true; }
+                b'?' => {
+                    *i += 1;
+                    if *j >= n.len() {
+                        return false;
                     }
-                    *i = save_i; *j = save_j;
-                    if !match_here(p, i, n, j) { return false; }
+                    *j += 1;
+                }
+                b'[' => {
+                    let save_i = *i;
+                    let save_j = *j;
+                    if char_classes(p, i) {
+                        if *j < n.len() {
+                            *j += 1;
+                        }
+                        if match_here(p, i, n, j) {
+                            return true;
+                        }
+                    }
+                    *i = save_i;
+                    *j = save_j;
+                    if !match_here(p, i, n, j) {
+                        return false;
+                    }
                 }
                 c => {
-                    if *j >= n.len() || n[*j] != c { return false; }
-                    *i += 1; *j += 1;
+                    if *j >= n.len() || n[*j] != c {
+                        return false;
+                    }
+                    *i += 1;
+                    *j += 1;
                 }
             }
         }
@@ -215,7 +273,8 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
     }
     let pb = pattern.as_bytes();
     let nb = name.as_bytes();
-    let mut i = 0; let mut j = 0;
+    let mut i = 0;
+    let mut j = 0;
     match_here(pb, &mut i, &nb, &mut j)
 }
 
@@ -223,17 +282,37 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 
 /// 默认忽略的目录名(gitignore + 常见垃圾目录集中管理)
 const IGNORED_DIRS: &[&str] = &[
-    ".git", ".hg", ".svn", ".cvsignore",
-    "target", "node_modules", "vendor", "dist", "build",
-    ".venv", "venv", "env", "__pycache__", ".mypy_cache",
-    ".pytest_cache", ".next", ".nuxt", ".turbo", ".cache",
-    ".idea", ".vscode", "coverage", ".nyc_output",
-    "Pods", ".gradle", ".terraform",
-    ".rxt-cache",  // rxt 自己的缓存目录
+    ".git",
+    ".hg",
+    ".svn",
+    ".cvsignore",
+    "target",
+    "node_modules",
+    "vendor",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".cache",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".nyc_output",
+    "Pods",
+    ".gradle",
+    ".terraform",
+    ".rxt-cache", // rxt 自己的缓存目录
 ];
 
 /// gitignore-aware 干净遍历 — 集中忽略逻辑, 所有代码理解命令复用
-/// 
+///
 /// - 永远跳过 IGNORED_DIRS 列出的目录
 /// - 永远跳过点开头文件(.git/.env 等)
 /// - 解析当前目录的 .gitignore(轻量: 简单 glob, 不递归嵌套 .gitignore)
@@ -252,7 +331,9 @@ fn load_gitignore(dir: &Path) -> Vec<String> {
     if let Ok(content) = std::fs::read_to_string(dir.join(".gitignore")) {
         for line in content.lines() {
             let l = line.trim();
-            if l.is_empty() || l.starts_with('#') { continue; }
+            if l.is_empty() || l.starts_with('#') {
+                continue;
+            }
             patterns.push(l.to_string());
         }
     }
@@ -268,7 +349,9 @@ fn walk_inner(
     results: &mut Vec<PathBuf>,
 ) {
     if let Some(md) = max_depth {
-        if depth > md { return; }
+        if depth > md {
+            return;
+        }
     }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -277,13 +360,15 @@ fn walk_inner(
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         // 跳过点开头文件/目录
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         // 跳过 IGNORED_DIRS
-        if IGNORED_DIRS.contains(&name.as_str()) { continue; }
+        if IGNORED_DIRS.contains(&name.as_str()) {
+            continue;
+        }
         // 跳过 .gitignore 命中的(简单匹配: 精确名或后缀)
-        if ignore_patterns.iter().any(|p| {
-            matches_gitignore(p, &name)
-        }) {
+        if ignore_patterns.iter().any(|p| matches_gitignore(p, &name)) {
             continue;
         }
         let p = entry.path();
@@ -293,7 +378,9 @@ fn walk_inner(
             // 扩展名过滤
             if let Some(allowed) = exts {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if !allowed.contains(&ext) { continue; }
+                if !allowed.contains(&ext) {
+                    continue;
+                }
             }
             results.push(p);
         }
@@ -304,8 +391,12 @@ fn matches_gitignore(pattern: &str, name: &str) -> bool {
     // 去 / 后缀(只取最后一段)
     let pat = pattern.rsplit('/').next().unwrap_or(pattern);
     let pat = pat.trim_end_matches('/');
-    if pat.is_empty() { return false; }
-    if pat == name { return true; }
+    if pat.is_empty() {
+        return false;
+    }
+    if pat == name {
+        return true;
+    }
     // *.ext 后缀匹配
     if let Some(suffix) = pat.strip_prefix("*.") {
         return name.ends_with(&format!(".{}", suffix));
@@ -361,13 +452,18 @@ pub fn detect_kind(dir: &Path) -> Option<ProjectKind> {
     let gomod = dir.join("go.mod");
     if gomod.exists() {
         if let Ok(content) = std::fs::read_to_string(&gomod) {
-            let module = content.lines()
-                .find_map(|l| l.trim().strip_prefix("module ").map(|s| s.trim().to_string()))
+            let module = content
+                .lines()
+                .find_map(|l| {
+                    l.trim()
+                        .strip_prefix("module ")
+                        .map(|s| s.trim().to_string())
+                })
                 .unwrap_or_else(|| "unknown".into());
             return Some(ProjectKind {
                 kind: "go".into(),
                 name: module,
-                version: "0.0.0".into(),  // go.mod 无版本
+                version: "0.0.0".into(), // go.mod 无版本
                 manifest: gomod,
             });
         }
@@ -406,7 +502,11 @@ fn extract_toml_field(content: &str, field: &str) -> Option<String> {
         if l.starts_with(&needle) {
             // name = "rxt"
             let after = l[needle.len()..].trim();
-            let val = after.trim_start_matches('"').split('"').next().unwrap_or("");
+            let val = after
+                .trim_start_matches('"')
+                .split('"')
+                .next()
+                .unwrap_or("");
             if !val.is_empty() {
                 return Some(val.to_string());
             }
@@ -432,13 +532,16 @@ fn extract_json_field(content: &str, field: &str) -> Option<String> {
 /// token 估算 — chars/4 启发式(OpenAI 官方经验值, 零依赖)
 pub fn approx_tokens(text: &str) -> usize {
     let chars = text.chars().count();
-    (chars + 3) / 4  // 向上取整, 避免短文本算成 0
+    (chars + 3) / 4 // 向上取整, 避免短文本算成 0
 }
 
 /// token 预算截断 — 逐行累加 token, 超预算即停
-/// 
+///
 /// 返回 (保留的行, 是否发生了截断)
-pub fn truncate_to_budget(lines: &[(usize, String)], budget: usize) -> (Vec<(usize, String)>, bool) {
+pub fn truncate_to_budget(
+    lines: &[(usize, String)],
+    budget: usize,
+) -> (Vec<(usize, String)>, bool) {
     if budget == 0 {
         return (lines.to_vec(), false);
     }

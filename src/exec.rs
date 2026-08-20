@@ -1,10 +1,13 @@
-use std::path::{Path, PathBuf};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn python_path() -> String {
-    if cfg!(windows) { "C:/Progra~1/Python311/python.exe".to_string() }
-    else { "python3".to_string() }
+    if cfg!(windows) {
+        "C:/Progra~1/Python311/python.exe".to_string()
+    } else {
+        "python3".to_string()
+    }
 }
 
 /// 解释器配置
@@ -15,19 +18,50 @@ struct Runner {
     use_stdin: bool,
 }
 
-const RUNNER_SH: Runner = Runner { suffix: "sh", program: "sh", base_args: &[], use_stdin: true };
-const RUNNER_PY: Runner = Runner { suffix: "py", program: "python3", base_args: &["-c"], use_stdin: true };
-const RUNNER_PS1: Runner = Runner { suffix: "ps1", program: "powershell", base_args: &["-NoProfile", "-Command"], use_stdin: true };
-const RUNNER_PWSH7: Runner = Runner { suffix: "ps1", program: "pwsh", base_args: &["-NoProfile", "-Command"], use_stdin: true };
-const RUNNER_BAT: Runner = Runner { suffix: "bat", program: "cmd", base_args: &["/C"], use_stdin: false };
+const RUNNER_SH: Runner = Runner {
+    suffix: "sh",
+    program: "sh",
+    base_args: &[],
+    use_stdin: true,
+};
+const RUNNER_PY: Runner = Runner {
+    suffix: "py",
+    program: "python3",
+    base_args: &["-c"],
+    use_stdin: true,
+};
+const RUNNER_PS1: Runner = Runner {
+    suffix: "ps1",
+    program: "powershell",
+    base_args: &["-NoProfile", "-Command"],
+    use_stdin: true,
+};
+const RUNNER_PWSH7: Runner = Runner {
+    suffix: "ps1",
+    program: "pwsh",
+    base_args: &["-NoProfile", "-Command"],
+    use_stdin: true,
+};
+const RUNNER_BAT: Runner = Runner {
+    suffix: "bat",
+    program: "cmd",
+    base_args: &["/C"],
+    use_stdin: false,
+};
 
 /// 智能检测:默认是 sh
 fn auto_detect_lang(code: &str) -> Option<&'static str> {
     let trimmed = code.trim_start();
     if trimmed.starts_with("#!/") || trimmed.contains("\n#!") {
-        if trimmed.contains("python") { return Some("py"); }
-        if trimmed.contains("bash") || trimmed.contains("/sh") { return Some("sh"); }
-        if trimmed.contains("pwsh") || trimmed.contains("powershell") { return Some("ps1"); }
+        if trimmed.contains("python") {
+            return Some("py");
+        }
+        if trimmed.contains("bash") || trimmed.contains("/sh") {
+            return Some("sh");
+        }
+        if trimmed.contains("pwsh") || trimmed.contains("powershell") {
+            return Some("ps1");
+        }
     }
     let first_line = code.lines().next().unwrap_or("");
     // SQL 检测: psql 元命令或常见 SQL 关键字开头
@@ -37,13 +71,19 @@ fn auto_detect_lang(code: &str) -> Option<&'static str> {
         || fl_lower.starts_with("explain ") || fl_lower.starts_with("create ")
         || fl_lower.starts_with("insert ") || fl_lower.starts_with("update ")
         || fl_lower.starts_with("delete ") || fl_lower.starts_with("alter ")
-        || fl_lower.starts_with("-- ") && code.to_lowercase().contains("select ") {
+        || fl_lower.starts_with("-- ") && code.to_lowercase().contains("select ")
+    {
         return Some("sql");
     }
-    if first_line.starts_with("import ") || first_line.starts_with("from ")
-        || first_line.starts_with("def ") || first_line.starts_with("class ")
-        || first_line.starts_with("print(") || first_line.starts_with("if __name__")
-        || code.contains("\ndef ") || code.contains("\nclass ") {
+    if first_line.starts_with("import ")
+        || first_line.starts_with("from ")
+        || first_line.starts_with("def ")
+        || first_line.starts_with("class ")
+        || first_line.starts_with("print(")
+        || first_line.starts_with("if __name__")
+        || code.contains("\ndef ")
+        || code.contains("\nclass ")
+    {
         return Some("py");
     }
     if first_line.contains("param(") || first_line.starts_with("$") {
@@ -106,7 +146,13 @@ pub fn run(
         .map_err(|_| anyhow::anyhow!("decoded content is not valid UTF-8"))?;
 
     let detected = lang
-        .map(|l| if l == "auto" { auto_detect_lang(&text).unwrap_or("sh") } else { l })
+        .map(|l| {
+            if l == "auto" {
+                auto_detect_lang(&text).unwrap_or("sh")
+            } else {
+                l
+            }
+        })
         .unwrap_or_else(|| auto_detect_lang(&text).unwrap_or("sh"));
 
     // v0.4.1 集成A+B: 容器直达 + SQL 免转义执行
@@ -226,7 +272,11 @@ fn run_in_container(
         if use_pipe {
             // 远程 + shell: 写远程临时脚本, docker exec 跑它
             let tmp = "/tmp/_rxt_container.sh";
-            remote_channel.write_file_with_mode(std::path::Path::new(tmp), text.as_bytes(), 0o755)?;
+            remote_channel.write_file_with_mode(
+                std::path::Path::new(tmp),
+                text.as_bytes(),
+                0o755,
+            )?;
             let cmd = format!("docker exec -i {} {} {}", container, inner_program, tmp);
             let output = remote_channel.exec(&cmd)?;
             print!("{}", output);
@@ -317,13 +367,22 @@ fn run_local(text: &str, runner: &Runner, login: bool, json_output: bool) -> any
     }
 }
 
-fn run_remote(text: &str, lang: &str, login: bool, json_output: bool, remote: &crate::remote::RemoteChannel) -> anyhow::Result<i32> {
+fn run_remote(
+    text: &str,
+    lang: &str,
+    login: bool,
+    json_output: bool,
+    remote: &crate::remote::RemoteChannel,
+) -> anyhow::Result<i32> {
     let runner = runner_for(lang);
     let os = remote.remote_os();
-    
+
     let (tmp_path, exec_cmd, rm_cmd) = match os {
         crate::hosts::RemoteOs::Windows => {
-            let tmp = format!("C:\\Users\\{}\\AppData\\Local\\Temp\\_rxt_exec.ps1", remote.host_config().user);
+            let tmp = format!(
+                "C:\\Users\\{}\\AppData\\Local\\Temp\\_rxt_exec.ps1",
+                remote.host_config().user
+            );
             let exec = format!("pwsh -NoProfile -Command \"[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8; & '{}'\"", tmp);
             let rm = format!("pwsh -NoProfile -Command \"Remove-Item \'{}\'  -Force -ErrorAction SilentlyContinue\"", tmp);
             (tmp, exec, rm)

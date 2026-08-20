@@ -1,6 +1,6 @@
-use std::path::Path;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 use crate::signature::to_utf8_lf;
 use crate::signature::FileSignature;
@@ -15,6 +15,11 @@ pub fn run(path: &Path) -> anyhow::Result<()> {
     if !text.ends_with('\n') {
         out.write_all(b"\n")?;
     }
-    eprintln!("  encoding: {} | line_ending: {} | bytes: {}", sig.encoding, sig.line_ending, raw.len());
+    eprintln!(
+        "  encoding: {} | line_ending: {} | bytes: {}",
+        sig.encoding,
+        sig.line_ending,
+        raw.len()
+    );
     Ok(())
 }

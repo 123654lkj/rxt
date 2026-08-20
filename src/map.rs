@@ -5,13 +5,13 @@
 //! 绑定 git HEAD 做缓存: HEAD 没变直接读缓存(零探测往返),
 //! HEAD 变了只重算变更文件的符号(增量).
 
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use std::time::UNIX_EPOCH;
 use serde_json::json;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// map 命令入口
-/// 
+///
 /// - dir: 项目根目录
 /// - json_output: JSON 输出(否则文本简报)
 /// - refresh: 强制全量重算, 忽略缓存
@@ -31,7 +31,10 @@ pub fn run(dir: &Path, json_output: bool, refresh: bool, depth: usize) -> anyhow
             }
             // HEAD 变了, 增量更新
             if let Some(report) = incremental_update(&root, cached, depth) {
-                let new_cache = Cache { report: report.clone(), head: head.clone() };
+                let new_cache = Cache {
+                    report: report.clone(),
+                    head: head.clone(),
+                };
                 let _ = save_cache(&cache_path, &new_cache);
                 output(&report, json_output, false)?;
                 return Ok(());
@@ -41,7 +44,10 @@ pub fn run(dir: &Path, json_output: bool, refresh: bool, depth: usize) -> anyhow
 
     // 2. 全量计算
     let report = build_full(&root, depth);
-    let new_cache = Cache { report: report.clone(), head: head.clone() };
+    let new_cache = Cache {
+        report: report.clone(),
+        head: head.clone(),
+    };
     let _ = save_cache(&cache_path, &new_cache);
     output(&report, json_output, false)?;
     Ok(())
@@ -92,9 +98,20 @@ fn build_structure(root: &Path, depth: usize) -> String {
     out.trim_end().to_string()
 }
 
-fn structure_recurse(dir: &Path, prefix: &str, max_depth: usize, cur: usize, ignore: &[String], out: &mut String) {
-    if cur >= max_depth { return; }
-    let Ok(entries) = std::fs::read_dir(dir) else { return; };
+fn structure_recurse(
+    dir: &Path,
+    prefix: &str,
+    max_depth: usize,
+    cur: usize,
+    ignore: &[String],
+    out: &mut String,
+) {
+    if cur >= max_depth {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut items: Vec<_> = entries.flatten().collect();
     // 目录优先, 然后按名排序
     items.sort_by(|a, b| {
@@ -109,7 +126,9 @@ fn structure_recurse(dir: &Path, prefix: &str, max_depth: usize, cur: usize, ign
     let total = items.iter().filter(|e| should_show(e, ignore)).count();
     let mut shown = 0;
     for entry in &items {
-        if !should_show(entry, ignore) { continue; }
+        if !should_show(entry, ignore) {
+            continue;
+        }
         shown += 1;
         let last = shown == total;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -119,7 +138,11 @@ fn structure_recurse(dir: &Path, prefix: &str, max_depth: usize, cur: usize, ign
         out.push_str(&name);
         out.push('\n');
         if entry.path().is_dir() {
-            let new_prefix = if last { format!("{}    ", prefix) } else { format!("{}│   ", prefix) };
+            let new_prefix = if last {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
             structure_recurse(&entry.path(), &new_prefix, max_depth, cur + 1, ignore, out);
         }
     }
@@ -127,9 +150,18 @@ fn structure_recurse(dir: &Path, prefix: &str, max_depth: usize, cur: usize, ign
 
 fn should_show(entry: &std::fs::DirEntry, ignore: &[String]) -> bool {
     let name = entry.file_name().to_string_lossy().into_owned();
-    if name.starts_with('.') { return false; }
-    if crate::common::is_ignored_dir(&name) { return false; }
-    if ignore.iter().any(|p| crate::common::matches_gitignore_pub(p, &name)) { return false; }
+    if name.starts_with('.') {
+        return false;
+    }
+    if crate::common::is_ignored_dir(&name) {
+        return false;
+    }
+    if ignore
+        .iter()
+        .any(|p| crate::common::matches_gitignore_pub(p, &name))
+    {
+        return false;
+    }
     true
 }
 
@@ -157,7 +189,10 @@ fn compute_stats(root: &Path, files: &[PathBuf]) -> serde_json::Value {
     }
     top_files.sort_by(|a, b| b.1.cmp(&a.1));
     top_files.truncate(10);
-    let top = top_files.into_iter().map(|(p, loc)| json!({"file": p, "loc": loc})).collect::<Vec<_>>();
+    let top = top_files
+        .into_iter()
+        .map(|(p, loc)| json!({"file": p, "loc": loc}))
+        .collect::<Vec<_>>();
     json!({
         "files": files.len(),
         "loc": total_loc,
@@ -188,20 +223,26 @@ fn extract_all_symbols(root: &Path, files: &[PathBuf]) -> Vec<serde_json::Value>
 
 /// 最近修改的文件 top 10(hotspots)
 fn compute_hotspots(root: &Path, files: &[PathBuf]) -> Vec<serde_json::Value> {
-    let mut stamped: Vec<(PathBuf, u64)> = files.iter().filter_map(|f| {
-        let mt = std::fs::metadata(f).ok()?.modified().ok()?;
-        let secs = mt.duration_since(UNIX_EPOCH).ok()?.as_secs();
-        Some((f.clone(), secs))
-    }).collect();
+    let mut stamped: Vec<(PathBuf, u64)> = files
+        .iter()
+        .filter_map(|f| {
+            let mt = std::fs::metadata(f).ok()?.modified().ok()?;
+            let secs = mt.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some((f.clone(), secs))
+        })
+        .collect();
     stamped.sort_by(|a, b| b.1.cmp(&a.1));
     stamped.truncate(10);
-    stamped.into_iter().map(|(f, secs)| {
-        json!({"file": rel_path(root, &f), "mtime": secs})
-    }).collect()
+    stamped
+        .into_iter()
+        .map(|(f, secs)| json!({"file": rel_path(root, &f), "mtime": secs}))
+        .collect()
 }
 
 fn rel_path(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).map(|r| r.display().to_string()).unwrap_or_else(|_| p.display().to_string())
+    p.strip_prefix(root)
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|_| p.display().to_string())
 }
 
 // ============================== 缓存引擎 ==============================
@@ -240,7 +281,7 @@ fn cached_head_matches(cached: &Cache, current: Option<&str>) -> bool {
 fn incremental_update(root: &Path, mut cached: Cache, _depth: usize) -> Option<serde_json::Value> {
     let changed = crate::git::changed_files_since_head();
     if changed.is_empty() {
-        return None;  // 没有变更, 走全量
+        return None; // 没有变更, 走全量
     }
     // 重建 symbols: 保留未变更文件, 重算变更文件
     let all_files = collect_source_files(root);
@@ -254,7 +295,9 @@ fn incremental_update(root: &Path, mut cached: Cache, _depth: usize) -> Option<s
             if let Ok(content) = std::fs::read_to_string(f) {
                 if let Some(syms) = crate::langs::extract_symbols(f, &content) {
                     for s in syms {
-                        new_symbols.push(json!({"file": rel, "kind": s.kind, "name": s.name, "line": s.line}));
+                        new_symbols.push(
+                            json!({"file": rel, "kind": s.kind, "name": s.name, "line": s.line}),
+                        );
                     }
                 }
             }
@@ -295,23 +338,42 @@ fn output(report: &serde_json::Value, json_output: bool, cached: bool) -> anyhow
 fn print_text_report(report: &serde_json::Value, cached: bool) {
     let g = |k: &str| report.get(k);
     println!("╔══ rxt map ═════════════════════════════════════════════════╗");
-    println!("║ {} {}{}",
+    println!(
+        "║ {} {}{}",
         g("kind").and_then(|v| v.as_str()).unwrap_or("?"),
         g("name").and_then(|v| v.as_str()).unwrap_or(""),
-        { let v = g("project_version").and_then(|v| v.as_str()).unwrap_or(""); if v.is_empty() { String::new() } else { format!(" v{}", v) } },
+        {
+            let v = g("project_version").and_then(|v| v.as_str()).unwrap_or("");
+            if v.is_empty() {
+                String::new()
+            } else {
+                format!(" v{}", v)
+            }
+        },
     );
     if let Some(vcs) = g("vcs") {
-        println!("║ {}{}{}",
+        println!(
+            "║ {}{}{}",
             vcs.get("branch").and_then(|v| v.as_str()).unwrap_or("-"),
-            vcs.get("head").and_then(|v| v.as_str()).map(|h| format!(" @{}", h)).unwrap_or_default(),
-            if vcs.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false) { " *" } else { "" },
+            vcs.get("head")
+                .and_then(|v| v.as_str())
+                .map(|h| format!(" @{}", h))
+                .unwrap_or_default(),
+            if vcs.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false) {
+                " *"
+            } else {
+                ""
+            },
         );
     }
-    if cached { println!("║ (cached, HEAD unchanged)"); }
+    if cached {
+        println!("║ (cached, HEAD unchanged)");
+    }
     println!("╚════════════════════════════════════════════════════════════╝");
 
     if let Some(stats) = g("stats") {
-        println!("\n📊 Stats: {} files, {} LOC",
+        println!(
+            "\n📊 Stats: {} files, {} LOC",
             stats.get("files").and_then(|v| v.as_u64()).unwrap_or(0),
             stats.get("loc").and_then(|v| v.as_u64()).unwrap_or(0),
         );
@@ -336,7 +398,11 @@ fn print_text_report(report: &serde_json::Value, cached: bool) {
         }
         let mut sorted: Vec<_> = by_kind.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        let summary = sorted.iter().map(|(k, c)| format!("{}({})", k, c)).collect::<Vec<_>>().join(", ");
+        let summary = sorted
+            .iter()
+            .map(|(k, c)| format!("{}({})", k, c))
+            .collect::<Vec<_>>()
+            .join(", ");
         println!("   {}", summary);
     }
 
@@ -344,7 +410,10 @@ fn print_text_report(report: &serde_json::Value, cached: bool) {
         if !hot.is_empty() {
             println!("\n🔥 Hotspots (recently changed):");
             for h in hot.iter().take(5) {
-                println!("   {}", h.get("file").and_then(|v| v.as_str()).unwrap_or("?"));
+                println!(
+                    "   {}",
+                    h.get("file").and_then(|v| v.as_str()).unwrap_or("?")
+                );
             }
         }
     }

@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 
 /// 文件哈希 — SHA256 / MD5
 pub fn run(path: Option<&Path>, algo: &str, text: Option<&str>) -> anyhow::Result<()> {

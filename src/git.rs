@@ -1,8 +1,8 @@
 //! rxt git - AI 友好的 git 包装
 //! status/diff/log/branch 输出 JSON,AI 直接消化
 
-use std::process::Command;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, serde::Serialize)]
 pub struct GitStatus {
@@ -23,13 +23,19 @@ pub struct FileChange {
 pub fn git(args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("git").args(args).output()?;
     if !out.status.success() {
-        anyhow::bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 fn is_git_repo() -> bool {
-    Command::new("git").args(["rev-parse", "--git-dir"]).output()
+    Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -45,12 +51,39 @@ pub fn run(subcmd: GitSubCmd, json_output: bool) -> anyhow::Result<()> {
         GitSubCmd::Log { num } => log(num, json_output),
         GitSubCmd::Branch => branch(json_output),
         GitSubCmd::Add { paths } => add_cmd(&paths),
-        GitSubCmd::Commit { message, all, dry_run } => commit_cmd(all, dry_run, message),
+        GitSubCmd::Commit {
+            message,
+            all,
+            dry_run,
+        } => commit_cmd(all, dry_run, message),
         GitSubCmd::Undo { soft } => undo(soft),
-        GitSubCmd::Push { remote, force, upstream, branch } => push(&remote, force, upstream, branch.as_deref()),
-        GitSubCmd::Pull { remote, rebase, branch } => pull(&remote, rebase, branch.as_deref()),
+        GitSubCmd::Push {
+            remote,
+            force,
+            upstream,
+            branch,
+        } => push(&remote, force, upstream, branch.as_deref()),
+        GitSubCmd::Pull {
+            remote,
+            rebase,
+            branch,
+        } => pull(&remote, rebase, branch.as_deref()),
         GitSubCmd::Fetch { remote, refspec } => fetch(&remote, refspec.as_deref()),
-        GitSubCmd::Remote { add, url, del, rename, to, set_url } => remote_cmd(add.as_deref(), url.as_deref(), del.as_deref(), rename.as_deref(), to.as_deref(), set_url.as_deref()),
+        GitSubCmd::Remote {
+            add,
+            url,
+            del,
+            rename,
+            to,
+            set_url,
+        } => remote_cmd(
+            add.as_deref(),
+            url.as_deref(),
+            del.as_deref(),
+            rename.as_deref(),
+            to.as_deref(),
+            set_url.as_deref(),
+        ),
     }
 }
 
@@ -74,8 +107,10 @@ pub enum GitSubCmd {
     Commit {
         #[arg(short, long = "message")]
         message: Option<String>,
-        #[arg(long)] all: bool,
-        #[arg(long)] dry_run: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        dry_run: bool,
     },
     #[command(about = "撤销上次 commit (默认保留改动)")]
     Undo {
@@ -84,30 +119,45 @@ pub enum GitSubCmd {
     },
     #[command(about = "推送到远程 (默认 origin,可 --remote 指定)")]
     Push {
-        #[arg(long, default_value = "origin")] remote: String,
-        #[arg(long, help = "强制推送")] force: bool,
-        #[arg(long, help = "推送并设置上游跟踪")] upstream: bool,
-        #[arg(help = "分支名(默认当前分支)")] branch: Option<String>,
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[arg(long, help = "强制推送")]
+        force: bool,
+        #[arg(long, help = "推送并设置上游跟踪")]
+        upstream: bool,
+        #[arg(help = "分支名(默认当前分支)")]
+        branch: Option<String>,
     },
     #[command(about = "拉取远程 (默认 origin)")]
     Pull {
-        #[arg(long, default_value = "origin")] remote: String,
-        #[arg(long, help = "用 rebase 而非 merge")] rebase: bool,
-        #[arg(help = "分支名(默认当前分支)")] branch: Option<String>,
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[arg(long, help = "用 rebase 而非 merge")]
+        rebase: bool,
+        #[arg(help = "分支名(默认当前分支)")]
+        branch: Option<String>,
     },
     #[command(about = "fetch 远程(不合并)")]
     Fetch {
-        #[arg(long, default_value = "origin")] remote: String,
-        #[arg(help = "可选 refspec")] refspec: Option<String>,
+        #[arg(long, default_value = "origin")]
+        remote: String,
+        #[arg(help = "可选 refspec")]
+        refspec: Option<String>,
     },
     #[command(about = "远程仓库管理 (list/add/remove/set-url)")]
     Remote {
-        #[arg(long, help = "添加: --add 名称 URL")] add: Option<String>,
-        #[arg(long, help = "add 时的 URL")] url: Option<String>,
-        #[arg(long = "del", help = "删除远程")] del: Option<String>,
-        #[arg(long, help = "改名: --rename 旧 新")] rename: Option<String>,
-        #[arg(long, help = "rename 的新名字")] to: Option<String>,
-        #[arg(long = "set-url", help = "改 URL: --set-url 名称 --url URL")] set_url: Option<String>,
+        #[arg(long, help = "添加: --add 名称 URL")]
+        add: Option<String>,
+        #[arg(long, help = "add 时的 URL")]
+        url: Option<String>,
+        #[arg(long = "del", help = "删除远程")]
+        del: Option<String>,
+        #[arg(long, help = "改名: --rename 旧 新")]
+        rename: Option<String>,
+        #[arg(long, help = "rename 的新名字")]
+        to: Option<String>,
+        #[arg(long = "set-url", help = "改 URL: --set-url 名称 --url URL")]
+        set_url: Option<String>,
     },
 }
 
@@ -115,14 +165,19 @@ fn status(path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
     if let Some(p) = path {
         std::env::set_current_dir(p)?;
     }
-    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "HEAD".to_string()).trim().to_string();
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .unwrap_or_else(|_| "HEAD".to_string())
+        .trim()
+        .to_string();
     let porcelain = git(&["status", "--porcelain"])?;
     let mut staged = Vec::new();
     let mut modified = Vec::new();
     let mut untracked = Vec::new();
 
     for line in porcelain.lines() {
-        if line.len() < 3 { continue; }
+        if line.len() < 3 {
+            continue;
+        }
         let xy = &line[..2];
         let path = line[3..].trim().to_string();
         match xy {
@@ -147,9 +202,15 @@ fn status(path: Option<&Path>, json_output: bool) -> anyhow::Result<()> {
         if staged.is_empty() && modified.is_empty() && untracked.is_empty() {
             println!("Working tree clean");
         } else {
-            for s in &staged { println!("  staged:    {}", s.path); }
-            for m in &modified { println!("  modified:  {}", m.path); }
-            for u in &untracked { println!("  untracked: {}", u); }
+            for s in &staged {
+                println!("  staged:    {}", s.path);
+            }
+            for m in &modified {
+                println!("  modified:  {}", m.path);
+            }
+            for u in &untracked {
+                println!("  untracked: {}", u);
+            }
         }
     }
     Ok(())
@@ -166,7 +227,11 @@ fn change_with_stats(path: &str) -> FileChange {
             dels += parts[1].parse::<usize>().unwrap_or(0);
         }
     }
-    FileChange { path: path.to_string(), insertions: ins, deletions: dels }
+    FileChange {
+        path: path.to_string(),
+        insertions: ins,
+        deletions: dels,
+    }
 }
 
 fn diff(path: Option<&Path>, staged: bool, json_output: bool) -> anyhow::Result<()> {
@@ -226,8 +291,17 @@ fn diff(path: Option<&Path>, staged: bool, json_output: bool) -> anyhow::Result<
 
 fn log(num: Option<usize>, json_output: bool) -> anyhow::Result<()> {
     let n = num.unwrap_or(10);
-    let fmt = if json_output { "%H|%h|%an|%ae|%ad|%s" } else { "%h %an %ad %s" };
-    let output = git(&["log", &format!("-n{}", n), &format!("--format={}", fmt), "--date=iso-strict"])?;
+    let fmt = if json_output {
+        "%H|%h|%an|%ae|%ad|%s"
+    } else {
+        "%h %an %ad %s"
+    };
+    let output = git(&[
+        "log",
+        &format!("-n{}", n),
+        &format!("--format={}", fmt),
+        "--date=iso-strict",
+    ])?;
     if json_output {
         let mut entries = Vec::new();
         for line in output.lines() {
@@ -315,8 +389,12 @@ fn undo(soft: bool) -> anyhow::Result<()> {
 
 /// 当前 HEAD commit 完整 hash(失败返回 None, 不退出)
 pub fn current_head() -> Option<String> {
-    if !is_git_repo() { return None; }
-    git(&["rev-parse", "HEAD"]).ok().map(|s| s.trim().to_string())
+    if !is_git_repo() {
+        return None;
+    }
+    git(&["rev-parse", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// 当前 HEAD 短 hash(前 7 位)
@@ -326,11 +404,13 @@ pub fn current_head_short() -> Option<String> {
 
 /// 当前分支名(分离 HEAD 时返回 None)
 pub fn current_branch() -> Option<String> {
-    if !is_git_repo() { return None; }
+    if !is_git_repo() {
+        return None;
+    }
     let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
     let b = b.trim();
     if b.is_empty() || b == "HEAD" {
-        None  // 分离 HEAD
+        None // 分离 HEAD
     } else {
         Some(b.to_string())
     }
@@ -338,7 +418,9 @@ pub fn current_branch() -> Option<String> {
 
 /// 工作区是否有未提交改动
 pub fn is_dirty() -> bool {
-    if !is_git_repo() { return false; }
+    if !is_git_repo() {
+        return false;
+    }
     git(&["status", "--porcelain"])
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false)
@@ -347,18 +429,26 @@ pub fn is_dirty() -> bool {
 /// 自上次 HEAD 以来变更的文件清单(用于 map 增量缓存)
 /// 返回相对路径列表; 失败或非 git 返回空
 pub fn changed_files_since_head() -> Vec<String> {
-    if !is_git_repo() { return vec![]; }
+    if !is_git_repo() {
+        return vec![];
+    }
     git(&["status", "--porcelain"])
         .map(|s| {
             s.lines()
                 .filter_map(|l| {
                     // porcelain 格式: "XY path" 或 "XY "path with space""
                     let l = l.strip_prefix("\"\"").unwrap_or(l);
-                    if l.len() < 4 { return None; }
+                    if l.len() < 4 {
+                        return None;
+                    }
                     // 跳过前 2 个状态字符 + 1 空格
                     let path = l[3..].trim();
                     let path = path.trim_matches('"');
-                    if path.is_empty() { None } else { Some(path.to_string()) }
+                    if path.is_empty() {
+                        None
+                    } else {
+                        Some(path.to_string())
+                    }
                 })
                 .collect()
         })
@@ -370,18 +460,28 @@ pub fn changed_files_since_head() -> Vec<String> {
 fn push(remote: &str, force: bool, upstream: bool, branch: Option<&str>) -> anyhow::Result<()> {
     let br = branch.map(|b| b.to_string()).or_else(current_branch);
     let mut args: Vec<String> = vec!["push".into()];
-    if force { args.push("--force".into()); }
-    if upstream { args.push("-u".into()); }
+    if force {
+        args.push("--force".into());
+    }
+    if upstream {
+        args.push("-u".into());
+    }
     args.push(remote.into());
-    if let Some(b) = &br { args.push(b.clone()); }
+    if let Some(b) = &br {
+        args.push(b.clone());
+    }
 
     // push 输出去 stderr,用 inherit 让用户直接看进度
-    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
+    let status = git_ssh_command()
+        .args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
     if status.success() {
-        let target = match &br { Some(b) => format!("{} {}", remote, b), None => remote.into() };
+        let target = match &br {
+            Some(b) => format!("{} {}", remote, b),
+            None => remote.into(),
+        };
         println!("✓ 已推送到 {}", target);
         Ok(())
     } else {
@@ -392,38 +492,64 @@ fn push(remote: &str, force: bool, upstream: bool, branch: Option<&str>) -> anyh
 fn pull(remote: &str, rebase: bool, branch: Option<&str>) -> anyhow::Result<()> {
     let br = branch.map(|b| b.to_string()).or_else(current_branch);
     let mut args: Vec<String> = vec!["pull".into()];
-    if rebase { args.push("--rebase".into()); }
+    if rebase {
+        args.push("--rebase".into());
+    }
     args.push(remote.into());
-    if let Some(b) = &br { args.push(b.clone()); }
+    if let Some(b) = &br {
+        args.push(b.clone());
+    }
 
-    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
+    let status = git_ssh_command()
+        .args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
-    if status.success() { println!("✓ pull 完成"); Ok(()) }
-    else { anyhow::bail!("pull 失败 (exit {})", status.code().unwrap_or(-1)) }
+    if status.success() {
+        println!("✓ pull 完成");
+        Ok(())
+    } else {
+        anyhow::bail!("pull 失败 (exit {})", status.code().unwrap_or(-1))
+    }
 }
 
 fn fetch(remote: &str, refspec: Option<&str>) -> anyhow::Result<()> {
     let mut args: Vec<String> = vec!["fetch".into(), remote.into()];
-    if let Some(r) = refspec { args.push(r.into()); }
-    let status = git_ssh_command().args(args.iter().map(|s| s.as_str()))
+    if let Some(r) = refspec {
+        args.push(r.into());
+    }
+    let status = git_ssh_command()
+        .args(args.iter().map(|s| s.as_str()))
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
-    if status.success() { println!("✓ fetch 完成"); Ok(()) }
-    else { anyhow::bail!("fetch 失败 (exit {})", status.code().unwrap_or(-1)) }
+    if status.success() {
+        println!("✓ fetch 完成");
+        Ok(())
+    } else {
+        anyhow::bail!("fetch 失败 (exit {})", status.code().unwrap_or(-1))
+    }
 }
 
 /// 构造带 SSH 环境的 git 命令(解决非交互模式 hostkey 校验问题)
 fn git_ssh_command() -> Command {
     let mut cmd = Command::new("git");
     // 让 SSH 不卡在 hostkey 确认上(非交互环境必须)
-    cmd.env("GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes");
+    cmd.env(
+        "GIT_SSH_COMMAND",
+        "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
+    );
     cmd
 }
 
-fn remote_cmd(add: Option<&str>, url: Option<&str>, del: Option<&str>, rename: Option<&str>, to: Option<&str>, set_url: Option<&str>) -> anyhow::Result<()> {
+fn remote_cmd(
+    add: Option<&str>,
+    url: Option<&str>,
+    del: Option<&str>,
+    rename: Option<&str>,
+    to: Option<&str>,
+    set_url: Option<&str>,
+) -> anyhow::Result<()> {
     if let Some(name) = add {
         let u = url.ok_or_else(|| anyhow::anyhow!("--add 需要 --url"))?;
         git(&["remote", "add", name, u])?;

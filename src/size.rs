@@ -1,4 +1,4 @@
-﻿// rxt size — 编译产物大小分析
+// rxt size — 编译产物大小分析
 use std::path::{Path, PathBuf};
 
 pub fn run(
@@ -22,7 +22,13 @@ pub fn run(
                 let p = entry.path();
                 if p.is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') || name == "debug" || name == "release" || name == "doc" || name == "package" || name == "wasm" {
+                    if name.starts_with('.')
+                        || name == "debug"
+                        || name == "release"
+                        || name == "doc"
+                        || name == "package"
+                        || name == "wasm"
+                    {
                         continue;
                     }
                     let bin_dir = p.join(profile);
@@ -55,7 +61,9 @@ pub fn run(
         let mut files: Vec<(PathBuf, u64)> = Vec::new();
         collect_binaries(dir, &mut files);
 
-        if files.is_empty() { continue; }
+        if files.is_empty() {
+            continue;
+        }
 
         if sort {
             files.sort_by(|a, b| b.1.cmp(&a.1));
@@ -83,7 +91,9 @@ pub fn run(
 }
 
 fn find_root(dir: Option<&str>) -> anyhow::Result<PathBuf> {
-    let start = dir.map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap());
+    let start = dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap());
     let mut current = Some(start.as_path());
     while let Some(p) = current {
         if p.join("Cargo.toml").exists() {
@@ -100,10 +110,14 @@ fn collect_binaries(dir: &Path, out: &mut Vec<(PathBuf, u64)>) {
             let p = entry.path();
             if p.is_file() {
                 let is_exe = p.extension().map(|e| e == "exe").unwrap_or(false);
-                if !is_exe && !is_executable(&p) { continue; }
+                if !is_exe && !is_executable(&p) {
+                    continue;
+                }
                 if let Ok(meta) = p.metadata() {
                     let len = meta.len();
-                    if len < 1024 { continue; }
+                    if len < 1024 {
+                        continue;
+                    }
                     out.push((p, len));
                 }
             }
@@ -115,7 +129,9 @@ fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        p.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {

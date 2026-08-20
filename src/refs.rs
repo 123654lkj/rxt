@@ -10,10 +10,10 @@
 //! 不依赖真 LSP, 文本启发式覆盖 80% 场景, 够 agent 顺着调用链走.
 //! v0.7: 新增 --callers / --callees 双向调用链(灵感: codeseek 调用图 + loop-engineering impact 分析).
 
-use std::path::PathBuf;
-use std::path::Path;
 use regex::Regex;
 use serde_json::json;
+use std::path::Path;
+use std::path::PathBuf;
 
 /// refs 命令入口
 ///
@@ -22,7 +22,13 @@ use serde_json::json;
 /// - callers: 只列出真实调用 symbol 的位置(并标注所属函数)
 /// - callees: 列出 symbol 函数体内调用的所有符号
 /// - json_output: JSON 输出
-pub fn run(symbol: &str, root: &Path, callers: bool, callees: bool, json_output: bool) -> anyhow::Result<()> {
+pub fn run(
+    symbol: &str,
+    root: &Path,
+    callers: bool,
+    callees: bool,
+    json_output: bool,
+) -> anyhow::Result<()> {
     if callers {
         return run_callers(symbol, root, json_output);
     }
@@ -42,9 +48,19 @@ fn run_default(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
 
     // 定义关键字(各语言)
     let def_keywords = [
-        "fn", "def", "function", "func",
-        "struct", "class", "interface", "enum", "trait",
-        "type", "const", "let", "var",
+        "fn",
+        "def",
+        "function",
+        "func",
+        "struct",
+        "class",
+        "interface",
+        "enum",
+        "trait",
+        "type",
+        "const",
+        "let",
+        "var",
     ];
 
     // 收集所有源文件
@@ -56,7 +72,9 @@ fn run_default(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
             let rel = rel_path(root, f);
             for (idx, line) in content.lines().enumerate() {
                 let line_num = idx + 1;
-                if !re.is_match(line) { continue; }
+                if !re.is_match(line) {
+                    continue;
+                }
                 let t = line.trim_start();
                 // 判断是否定义行: 行首(去 pub/async/export 等修饰)是 def 关键字
                 let stripped = strip_modifiers(t);
@@ -73,9 +91,14 @@ fn run_default(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     }
 
     if json_output {
-        let arr: Vec<_> = refs.iter().map(|r| json!({
-            "file": r.file, "line": r.line, "kind": r.kind, "ctx": r.ctx,
-        })).collect();
+        let arr: Vec<_> = refs
+            .iter()
+            .map(|r| {
+                json!({
+                    "file": r.file, "line": r.line, "kind": r.kind, "ctx": r.ctx,
+                })
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&json!(arr))?);
     } else {
         print_text(&refs, symbol);
@@ -86,7 +109,7 @@ fn run_default(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
 struct Ref {
     file: String,
     line: usize,
-    kind: &'static str,  // "def" / "call"
+    kind: &'static str, // "def" / "call"
     ctx: String,
 }
 
@@ -96,7 +119,24 @@ fn strip_modifiers(line: &str) -> &str {
     loop {
         let trimmed = s.trim_start();
         let next = trimmed.split_whitespace().next().unwrap_or("");
-        if matches!(next, "pub" | "async" | "export" | "static" | "const" | "final" | "private" | "public" | "protected" | "abstract" | "virtual" | "override" | "unsafe" | "extern" | "crate") {
+        if matches!(
+            next,
+            "pub"
+                | "async"
+                | "export"
+                | "static"
+                | "const"
+                | "final"
+                | "private"
+                | "public"
+                | "protected"
+                | "abstract"
+                | "virtual"
+                | "override"
+                | "unsafe"
+                | "extern"
+                | "crate"
+        ) {
             // 跳过这个修饰词
             s = &trimmed[next.len()..];
         } else {
@@ -118,8 +158,19 @@ fn run_callers(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     let re_call = Regex::new(&call_pat)?;
     // 定义行排除: 行首(去修饰)是 def 关键字 + symbol
     let def_keywords = [
-        "fn", "def", "function", "func", "struct", "class",
-        "interface", "enum", "trait", "type", "const", "let", "var",
+        "fn",
+        "def",
+        "function",
+        "func",
+        "struct",
+        "class",
+        "interface",
+        "enum",
+        "trait",
+        "type",
+        "const",
+        "let",
+        "var",
     ];
 
     let files = collect_source_files(root);
@@ -149,8 +200,12 @@ fn run_callers(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
                 continue;
             }
             // 跳过注释行
-            if t.starts_with("//") || t.starts_with('#') || t.starts_with("/*") { continue; }
-            if !re_call.is_match(line) { continue; }
+            if t.starts_with("//") || t.starts_with('#') || t.starts_with("/*") {
+                continue;
+            }
+            if !re_call.is_match(line) {
+                continue;
+            }
 
             // 反查所属函数: 当前行号之前最近的符号定义
             let owner = sym_sorted
@@ -180,16 +235,22 @@ fn run_callers(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     }
 
     if json_output {
-        let arr: Vec<_> = callers.iter().map(|c| json!({
-            "file": c.file, "line": c.line,
-            "in_fn": c.in_fn, "in_fn_line": c.in_fn_line, "ctx": c.ctx,
-        })).collect();
+        let arr: Vec<_> = callers
+            .iter()
+            .map(|c| {
+                json!({
+                    "file": c.file, "line": c.line,
+                    "in_fn": c.in_fn, "in_fn_line": c.in_fn_line, "ctx": c.ctx,
+                })
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&json!(arr))?);
     } else {
         println!("callers '{}' — {} 处调用", symbol, callers.len());
         println!();
         // 按 in_fn 分组, 看影响面更清楚
-        let mut by_fn: std::collections::BTreeMap<String, Vec<&Caller>> = std::collections::BTreeMap::new();
+        let mut by_fn: std::collections::BTreeMap<String, Vec<&Caller>> =
+            std::collections::BTreeMap::new();
         for c in &callers {
             by_fn.entry(c.in_fn.clone()).or_default().push(c);
         }
@@ -244,7 +305,9 @@ fn run_callees(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     let (def_file, def_line, def_kind, content) = match def_hit {
         Some(h) => h,
         None => {
-            if json_output { println!("[]"); } else {
+            if json_output {
+                println!("[]");
+            } else {
                 println!("找不到 '{}' 的函数定义(需要 fn/def/function/func).", symbol);
             }
             return Ok(());
@@ -256,41 +319,65 @@ fn run_callees(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     // 第二步: 函数体范围
     let body_len = crate::digest::count_body(&lines, def_line, &def_kind);
     let body_start_idx = def_line.saturating_sub(1);
-    let body_end_idx = (def_line + body_len).min(lines.len());  // def_line 是 1-indexed
+    let body_end_idx = (def_line + body_len).min(lines.len()); // def_line 是 1-indexed
 
     // 第三步: 扫描 body 内的调用. 匹配 ident( , 排除关键字/控制流/属性访问(.ident).
     let call_re = Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")?;
     let exclude = [
-        "if", "for", "while", "match", "switch", "catch", "return", "print", "println",
-        "eprintln", "eprint", "format", "vec", "Some", "Ok", "Err", "None", "assert",
+        "if", "for", "while", "match", "switch", "catch", "return", "print", "println", "eprintln",
+        "eprint", "format", "vec", "Some", "Ok", "Err", "None", "assert",
     ];
     // 关键字/定义符不应被当作调用
     let def_keywords = [
-        "fn", "def", "function", "func", "struct", "class", "interface", "enum",
-        "trait", "type", "const", "let", "var", "async", "pub",
+        "fn",
+        "def",
+        "function",
+        "func",
+        "struct",
+        "class",
+        "interface",
+        "enum",
+        "trait",
+        "type",
+        "const",
+        "let",
+        "var",
+        "async",
+        "pub",
     ];
 
     // 记录: name -> (首次出现的 file:line, 出现次数)
-    let mut callees: std::collections::BTreeMap<String, (String, usize)> = std::collections::BTreeMap::new();
+    let mut callees: std::collections::BTreeMap<String, (String, usize)> =
+        std::collections::BTreeMap::new();
 
     for i in body_start_idx..body_end_idx {
-        if i >= lines.len() { break; }
+        if i >= lines.len() {
+            break;
+        }
         let line = lines[i];
         let line_num = i + 1;
         for cap in call_re.captures_iter(line) {
             let name = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-            if name.is_empty() { continue; }
-            if exclude.contains(&name) || def_keywords.contains(&name) { continue; }
+            if name.is_empty() {
+                continue;
+            }
+            if exclude.contains(&name) || def_keywords.contains(&name) {
+                continue;
+            }
             // 排除属性访问: .name( (前面是点) —— 这是方法调用, 属于别的对象的实现, 噪音大
             let m_start = cap.get(1).map(|m| m.start()).unwrap_or(0);
             if m_start > 0 {
                 let before = &line[..m_start];
-                if before.ends_with('.') { continue; }
+                if before.ends_with('.') {
+                    continue;
+                }
             }
             let loc = format!("{}:{}", rel, line_num);
             let entry = callees.entry(name.to_string()).or_insert((loc.clone(), 0));
             entry.1 += 1;
-            if entry.0.is_empty() { entry.0 = loc; }
+            if entry.0.is_empty() {
+                entry.0 = loc;
+            }
         }
     }
 
@@ -308,9 +395,14 @@ fn run_callees(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
     sorted.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
 
     if json_output {
-        let arr: Vec<_> = sorted.iter().map(|(name, (loc, cnt))| json!({
-            "name": name, "count": cnt, "first_at": loc,
-        })).collect();
+        let arr: Vec<_> = sorted
+            .iter()
+            .map(|(name, (loc, cnt))| {
+                json!({
+                    "name": name, "count": cnt, "first_at": loc,
+                })
+            })
+            .collect();
         let out = json!({
             "symbol": symbol,
             "defined_at": format!("{}:{}", rel, def_line),
@@ -319,7 +411,10 @@ fn run_callees(symbol: &str, root: &Path, json_output: bool) -> anyhow::Result<(
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("callees '{}' (定义于 {}:{}, 函数体 {} 行)", symbol, rel, def_line, body_len);
+        println!(
+            "callees '{}' (定义于 {}:{}, 函数体 {} 行)",
+            symbol, rel, def_line, body_len
+        );
         println!();
         println!("── 调用了 {} 个符号 ──", sorted.len());
         for (name, (loc, cnt)) in &sorted {
@@ -339,7 +434,9 @@ fn collect_source_files(root: &Path) -> Vec<PathBuf> {
 }
 
 fn rel_path(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).map(|r| r.display().to_string()).unwrap_or_else(|_| p.display().to_string())
+    p.strip_prefix(root)
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|_| p.display().to_string())
 }
 
 fn print_text(refs: &[Ref], symbol: &str) {
@@ -349,7 +446,12 @@ fn print_text(refs: &[Ref], symbol: &str) {
     }
     let defs: Vec<&Ref> = refs.iter().filter(|r| r.kind == "def").collect();
     let calls: Vec<&Ref> = refs.iter().filter(|r| r.kind == "call").collect();
-    println!("refs '{}' — {} def, {} call", symbol, defs.len(), calls.len());
+    println!(
+        "refs '{}' — {} def, {} call",
+        symbol,
+        defs.len(),
+        calls.len()
+    );
     println!();
     if !defs.is_empty() {
         println!("── Definitions ──");
@@ -372,18 +474,35 @@ fn print_text(refs: &[Ref], symbol: &str) {
 /// v0.8.0: 从函数体文本中提取所有调用 (供 callgraph 模块复用).
 /// 返回 (被调用的符号名, 行号 1-indexed) 列表.
 /// 排除控制流(if/for/while)、定义关键字(fn/struct)、属性访问(.method).
-pub fn extract_calls_from_body(lines: &[&str], start_idx: usize, end_idx: usize) -> Vec<(String, usize)> {
+pub fn extract_calls_from_body(
+    lines: &[&str],
+    start_idx: usize,
+    end_idx: usize,
+) -> Vec<(String, usize)> {
     let call_re = match Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(") {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
     let exclude = [
-        "if", "for", "while", "match", "switch", "catch", "return", "print", "println",
-        "eprintln", "eprint", "format", "vec", "Some", "Ok", "Err", "None", "assert",
+        "if", "for", "while", "match", "switch", "catch", "return", "print", "println", "eprintln",
+        "eprint", "format", "vec", "Some", "Ok", "Err", "None", "assert",
     ];
     let def_keywords = [
-        "fn", "def", "function", "func", "struct", "class", "interface", "enum",
-        "trait", "type", "const", "let", "var", "async", "pub",
+        "fn",
+        "def",
+        "function",
+        "func",
+        "struct",
+        "class",
+        "interface",
+        "enum",
+        "trait",
+        "type",
+        "const",
+        "let",
+        "var",
+        "async",
+        "pub",
     ];
 
     let mut calls = Vec::new();
@@ -392,11 +511,17 @@ pub fn extract_calls_from_body(lines: &[&str], start_idx: usize, end_idx: usize)
         let line_num = i + 1;
         for cap in call_re.captures_iter(line) {
             let name = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-            if name.is_empty() { continue; }
-            if exclude.contains(&name) || def_keywords.contains(&name) { continue; }
+            if name.is_empty() {
+                continue;
+            }
+            if exclude.contains(&name) || def_keywords.contains(&name) {
+                continue;
+            }
             // 排除属性访问 .name(
             let m_start = cap.get(1).map(|m| m.start()).unwrap_or(0);
-            if m_start > 0 && line[..m_start].ends_with('.') { continue; }
+            if m_start > 0 && line[..m_start].ends_with('.') {
+                continue;
+            }
             calls.push((name.to_string(), line_num));
         }
     }

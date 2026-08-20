@@ -1,4 +1,4 @@
-﻿// rxt clean — 智能 workspace 清理
+// rxt clean — 智能 workspace 清理
 use std::path::{Path, PathBuf};
 
 pub fn run(
@@ -114,7 +114,9 @@ pub fn run(
 }
 
 fn find_root(dir: Option<&str>) -> anyhow::Result<PathBuf> {
-    let start = dir.map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap());
+    let start = dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap());
     let mut current = Some(start.as_path());
     while let Some(p) = current {
         if p.join("Cargo.toml").exists() {

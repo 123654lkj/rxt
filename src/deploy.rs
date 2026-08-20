@@ -2,10 +2,10 @@
 //! v0.8.7: Windows 优先原生 OpenSSH（ssh/scp），不再依赖 bash+sshpass；
 //!         Linux 仍可用 sshpass，也可走本机 OpenSSH 密钥/ssh config。
 
+use crate::hosts::HostsFile;
+use base64::Engine;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use base64::Engine;
-use crate::hosts::HostsFile;
 
 pub fn run(
     binary: &PathBuf,
@@ -187,14 +187,7 @@ fn deploy_to_host(
 
     if !is_windows {
         let tmp_remote = "/tmp/_rxt_deploy_tmp";
-        scp_to(
-            use_native,
-            binary,
-            &target,
-            &config,
-            &password,
-            tmp_remote,
-        )?;
+        scp_to(use_native, binary, &target, &config, &password, tmp_remote)?;
         // 优先 sudo 装系统路径，失败则装到用户目录并尽量 cp
         let install = format!(
             "chmod +x {tmp} && (sudo mv {tmp} {rp} 2>/dev/null || sudo cp {tmp} {rp} 2>/dev/null || (mkdir -p \"$HOME/.local/bin\" && cp {tmp} \"$HOME/.local/bin/rxt\" && chmod 755 \"$HOME/.local/bin/rxt\"; cp {tmp} {rp} 2>/dev/null || true)) && (sudo chmod 755 {rp} 2>/dev/null || chmod 755 {rp} 2>/dev/null || true); test -x {rp} || test -x \"$HOME/.local/bin/rxt\"",
@@ -263,10 +256,7 @@ fn scp_to(
         c.arg(local).arg(&dest);
         let out = run_cmd(c)?;
         if !out.status.success() {
-            anyhow::bail!(
-                "scp 失败: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            anyhow::bail!("scp 失败: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(())
     } else {
@@ -283,10 +273,7 @@ fn scp_to(
             .env("SSHPASS", password)
             .output()?;
         if !out.status.success() {
-            anyhow::bail!(
-                "scp 失败: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            anyhow::bail!("scp 失败: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(())
     }

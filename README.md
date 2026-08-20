@@ -418,7 +418,9 @@ cargo build --release --no-default-features
 ### v0.9.0 (2026-08-20)
 
 - **`http` / `cookies` 拆分**：默认只开 ureq；rookie 改为可选，Windows 能编过。`--browser` 无 cookies feature 时明确报错。
-- **`http cli` / `forms`**：把网页收成 CLI（表单+链接），登录态走 Cookie，不靠无头浏览器。
+- **`http cli` / `forms`**：把网页收成 CLI（表单+`<a>`），登录态走 Cookie，不靠无头浏览器。
+- **`http scan`（别名 `apis`）**：GET 页面 → 拉入口 JS → 抽出 API URL/path，打印可复制的 `rxt http GET`。
+- **`http session`**：探测登录 Cookie 是否仍有效（过期 / 未带 Cookie 为 exit 2）。`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER` 作参数回退。
 - **接上 `rxt search`**：文档里有、clap 里没有的统一搜索（glob 文件名 / 内容）。
 - **去掉未挂接死代码**：`session`（旧 ssh2）、`seek`、`channel_update`、损坏的 `_gen_main.py`。
 - **Git 风格插件**：未知子命令走 `~/.rxt/plugins/<name>/` 再 PATH `rxt-<name>`；`rxt plugin list|install|remove|which`。同名不覆盖内置，除非 `install --force`。

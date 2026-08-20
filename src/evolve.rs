@@ -15,12 +15,24 @@
 //!   rxt evolve --ref "..." --cand "..." --inputs "f1,f2,f3" --timeout 10
 //!   rxt evolve --ref "..." --cand "..." --inputs "..." --first-fail  (首个失败即停,显示diff)
 
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use std::path::Path;
 
-pub fn run(reference: &str, candidate: &str, inputs: &str, mode: &str, timeout_secs: u64, first_fail: bool, json: bool) -> anyhow::Result<()> {
-    let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+pub fn run(
+    reference: &str,
+    candidate: &str,
+    inputs: &str,
+    mode: &str,
+    timeout_secs: u64,
+    first_fail: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
 
     // 解析输入集: 支持 glob 目录 / 逗号列表 / 单文件
     let input_files = expand_inputs(inputs)?;
@@ -48,7 +60,10 @@ pub fn run(reference: &str, candidate: &str, inputs: &str, mode: &str, timeout_s
         let ref_out = run_timed(shell, flag, &ref_cmd, timeout_secs);
         let cand_out = run_timed(shell, flag, &cand_cmd, timeout_secs);
 
-        let short_name = input.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| inp_str.clone());
+        let short_name = input
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| inp_str.clone());
 
         // 判定一致(根据 mode)
         let verdict = judge(&ref_out, &cand_out, mode);
@@ -56,27 +71,44 @@ pub fn run(reference: &str, candidate: &str, inputs: &str, mode: &str, timeout_s
         match verdict {
             Verdict::Match => {
                 matches += 1;
-                if !json { eprint!("\r  ✓ {}/{} 一致", i + 1, input_files.len()); }
+                if !json {
+                    eprint!("\r  ✓ {}/{} 一致", i + 1, input_files.len());
+                }
             }
             Verdict::Mismatch(ref_str, cand_str) => {
                 mismatches.push((short_name.clone(), ref_str, cand_str));
                 if !json {
-                    eprint!("\r  ✗ {}/{} 不一致: {}                        \n", i + 1, input_files.len(), short_name);
+                    eprint!(
+                        "\r  ✗ {}/{} 不一致: {}                        \n",
+                        i + 1,
+                        input_files.len(),
+                        short_name
+                    );
                 }
                 if first_fail {
                     // 首个失败即停, 详细显示
                     break;
                 }
             }
-            Verdict::RefOnlyFail => { ref_fails += 1; }
-            Verdict::CandOnlyFail => { cand_fails += 1; }
-            Verdict::BothFail => { both_fail += 1; }
+            Verdict::RefOnlyFail => {
+                ref_fails += 1;
+            }
+            Verdict::CandOnlyFail => {
+                cand_fails += 1;
+            }
+            Verdict::BothFail => {
+                both_fail += 1;
+            }
         }
     }
     eprintln!();
 
     let total = input_files.len();
-    let consistency = if total > 0 { matches as f64 / total as f64 * 100.0 } else { 0.0 };
+    let consistency = if total > 0 {
+        matches as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
 
     if json {
         let report = serde_json::json!({
@@ -103,17 +135,26 @@ pub fn run(reference: &str, candidate: &str, inputs: &str, mode: &str, timeout_s
     if !mismatches.is_empty() {
         println!("   {:<12} {}", "不一致:", mismatches.len());
     }
-    if ref_fails > 0 { println!("   {:<12} {} (参照崩,候选正常)", "参照失败:", ref_fails); }
-    if cand_fails > 0 { println!("   {:<12} {} (候选崩,需修复)", "候选失败:", cand_fails); }
-    if both_fail > 0 { println!("   {:<12} {}", "双失败:", both_fail); }
+    if ref_fails > 0 {
+        println!("   {:<12} {} (参照崩,候选正常)", "参照失败:", ref_fails);
+    }
+    if cand_fails > 0 {
+        println!("   {:<12} {} (候选崩,需修复)", "候选失败:", cand_fails);
+    }
+    if both_fail > 0 {
+        println!("   {:<12} {}", "双失败:", both_fail);
+    }
 
-    println!("\n{}", if consistency == 100.0 {
-        "🎉 一致率 100% — 进化成功! 该能力可从参照实现切换到候选实现。"
-    } else if consistency >= 99.0 {
-        "⚠ 一致率 >=99% — 接近完成, 修复少量不一致即可切换。"
-    } else {
-        "❌ 一致率低 — 候选实现与参照差异较大, 继续迭代。"
-    });
+    println!(
+        "\n{}",
+        if consistency == 100.0 {
+            "🎉 一致率 100% — 进化成功! 该能力可从参照实现切换到候选实现。"
+        } else if consistency >= 99.0 {
+            "⚠ 一致率 >=99% — 接近完成, 修复少量不一致即可切换。"
+        } else {
+            "❌ 一致率低 — 候选实现与参照差异较大, 继续迭代。"
+        }
+    );
 
     // 显示前几个不一致的 diff
     if !mismatches.is_empty() {
@@ -150,15 +191,27 @@ fn judge(ref_out: &RunResult, cand_out: &RunResult, mode: &str) -> Verdict {
     // 超时(exit_code=-999)强制失败
     let ref_ok = ref_ok && ref_out.exit_code != -999;
     let cand_ok = cand_ok && cand_out.exit_code != -999;
-    if !ref_ok && !cand_ok { return Verdict::BothFail; }
-    if !ref_ok { return Verdict::RefOnlyFail; }
-    if !cand_ok { return Verdict::CandOnlyFail; }
+    if !ref_ok && !cand_ok {
+        return Verdict::BothFail;
+    }
+    if !ref_ok {
+        return Verdict::RefOnlyFail;
+    }
+    if !cand_ok {
+        return Verdict::CandOnlyFail;
+    }
 
     // 都成功, 比较输出
     match mode {
         "exitcode" => {
-            if ref_out.exit_code == cand_out.exit_code { Verdict::Match }
-            else { Verdict::Mismatch(format!("exit {}", ref_out.exit_code), format!("exit {}", cand_out.exit_code)) }
+            if ref_out.exit_code == cand_out.exit_code {
+                Verdict::Match
+            } else {
+                Verdict::Mismatch(
+                    format!("exit {}", ref_out.exit_code),
+                    format!("exit {}", cand_out.exit_code),
+                )
+            }
         }
         "json" => {
             // 语义对比: 解析 JSON 后比较(忽略空白/顺序)
@@ -166,13 +219,19 @@ fn judge(ref_out: &RunResult, cand_out: &RunResult, mode: &str) -> Verdict {
             let cand_val = serde_json::from_str::<serde_json::Value>(&cand_out.stdout).ok();
             match (ref_val, cand_val) {
                 (Some(r), Some(c)) => {
-                    if json_equal(&r, &c) { Verdict::Match }
-                    else { Verdict::Mismatch(ref_out.stdout.clone(), cand_out.stdout.clone()) }
+                    if json_equal(&r, &c) {
+                        Verdict::Match
+                    } else {
+                        Verdict::Mismatch(ref_out.stdout.clone(), cand_out.stdout.clone())
+                    }
                 }
                 _ => {
                     // 非JSON, fallback 到精确比较
-                    if ref_out.stdout.trim() == cand_out.stdout.trim() { Verdict::Match }
-                    else { Verdict::Mismatch(ref_out.stdout.clone(), cand_out.stdout.clone()) }
+                    if ref_out.stdout.trim() == cand_out.stdout.trim() {
+                        Verdict::Match
+                    } else {
+                        Verdict::Mismatch(ref_out.stdout.clone(), cand_out.stdout.clone())
+                    }
                 }
             }
         }
@@ -191,8 +250,11 @@ fn judge(ref_out: &RunResult, cand_out: &RunResult, mode: &str) -> Verdict {
 fn json_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a, b) {
         (serde_json::Value::Object(ma), serde_json::Value::Object(mb)) => {
-            if ma.len() != mb.len() { return false; }
-            ma.iter().all(|(k, va)| mb.get(k).map_or(false, |vb| json_equal(va, vb)))
+            if ma.len() != mb.len() {
+                return false;
+            }
+            ma.iter()
+                .all(|(k, va)| mb.get(k).map_or(false, |vb| json_equal(va, vb)))
         }
         (serde_json::Value::Array(aa), serde_json::Value::Array(ab)) => {
             aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| json_equal(x, y))
@@ -212,7 +274,11 @@ fn run_timed(_shell: &str, _flag: &str, cmd: &str, timeout_secs: u64) -> RunResu
     // 简单 shell 解析: 按空格分词, 保留引号内整体
     let parts = shell_split(cmd);
     if parts.is_empty() {
-        return RunResult { stdout: String::new(), exit_code: -1, exit_ok: false };
+        return RunResult {
+            stdout: String::new(),
+            exit_code: -1,
+            exit_ok: false,
+        };
     }
     let start = std::time::Instant::now();
     let child = Command::new(&parts[0])
@@ -226,12 +292,16 @@ fn run_timed(_shell: &str, _flag: &str, cmd: &str, timeout_secs: u64) -> RunResu
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        let stdout = child.stdout.take().map(|mut s| {
-                            use std::io::Read;
-                            let mut buf = String::new();
-                            s.read_to_string(&mut buf).ok();
-                            buf
-                        }).unwrap_or_default();
+                        let stdout = child
+                            .stdout
+                            .take()
+                            .map(|mut s| {
+                                use std::io::Read;
+                                let mut buf = String::new();
+                                s.read_to_string(&mut buf).ok();
+                                buf
+                            })
+                            .unwrap_or_default();
                         return RunResult {
                             stdout,
                             exit_code: status.code().unwrap_or(-1),
@@ -241,19 +311,29 @@ fn run_timed(_shell: &str, _flag: &str, cmd: &str, timeout_secs: u64) -> RunResu
                     Ok(None) => {
                         if std::time::Instant::now() > deadline {
                             let _ = child.kill();
-                            return RunResult { stdout: String::new(), exit_code: -999, exit_ok: false };
+                            return RunResult {
+                                stdout: String::new(),
+                                exit_code: -999,
+                                exit_ok: false,
+                            };
                         }
                         std::thread::sleep(Duration::from_millis(50));
                     }
                     Err(_) => {
-                        return RunResult { stdout: String::new(), exit_code: -1, exit_ok: false };
+                        return RunResult {
+                            stdout: String::new(),
+                            exit_code: -1,
+                            exit_ok: false,
+                        };
                     }
                 }
             }
         }
-        Err(e) => {
-            RunResult { stdout: format!("启动失败: {}", e), exit_code: -1, exit_ok: false }
-        }
+        Err(e) => RunResult {
+            stdout: format!("启动失败: {}", e),
+            exit_code: -1,
+            exit_ok: false,
+        },
     }
 }
 
@@ -266,12 +346,17 @@ fn shell_split(cmd: &str) -> Vec<String> {
         match c {
             '"' => in_quote = !in_quote,
             ' ' | '\t' if !in_quote => {
-                if !cur.is_empty() { parts.push(cur.clone()); cur.clear(); }
+                if !cur.is_empty() {
+                    parts.push(cur.clone());
+                    cur.clear();
+                }
             }
             _ => cur.push(c),
         }
     }
-    if !cur.is_empty() { parts.push(cur); }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
     parts
 }
 
@@ -288,8 +373,8 @@ fn print_diff(ref_out: &str, cand_out: &str) {
                 println!("    {:>6} | {}", i + 1, r);
             }
         } else {
-            println!("  - {:>6} | {}", i + 1, r);  // 参照
-            println!("  + {:>6} | {}", i + 1, c);  // 候选
+            println!("  - {:>6} | {}", i + 1, r); // 参照
+            println!("  + {:>6} | {}", i + 1, c); // 候选
             shown += 1;
             if shown > 8 {
                 println!("    ... (更多差异省略)");
@@ -310,7 +395,9 @@ fn expand_inputs(spec: &str) -> anyhow::Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
     for part in spec.split(',') {
         let part = part.trim();
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         let p = Path::new(part);
         if p.is_dir() {
             // 目录: 收集所有文件(递归一层, 常见测试目录)
@@ -322,13 +409,22 @@ fn expand_inputs(spec: &str) -> anyhow::Result<Vec<std::path::PathBuf>> {
             }
         } else if part.contains('*') {
             // glob: 用 shell 展开
-            let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
-            let out = Command::new(shell).arg(flag).arg(format!("echo {}", part))
-                .output().map_err(|e| anyhow::anyhow!("glob 失败: {}", e))?;
+            let (shell, flag) = if cfg!(windows) {
+                ("cmd", "/C")
+            } else {
+                ("sh", "-c")
+            };
+            let out = Command::new(shell)
+                .arg(flag)
+                .arg(format!("echo {}", part))
+                .output()
+                .map_err(|e| anyhow::anyhow!("glob 失败: {}", e))?;
             let expanded = String::from_utf8_lossy(&out.stdout);
             for f in expanded.split_whitespace() {
                 let fp = Path::new(f);
-                if fp.is_file() { files.push(fp.to_path_buf()); }
+                if fp.is_file() {
+                    files.push(fp.to_path_buf());
+                }
             }
         } else if p.is_file() {
             files.push(p.to_path_buf());

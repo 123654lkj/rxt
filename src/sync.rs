@@ -3,9 +3,9 @@
 //! rxt sync <local_dir> --to <host>:<remote_dir> [--delete] [--dry-run]
 //! 基于 walk + read + write 实现, 不依赖 rsync
 
-use std::path::{Path, PathBuf};
-use crate::remote::RemoteChannel;
 use crate::hosts::RemoteOs;
+use crate::remote::RemoteChannel;
+use std::path::{Path, PathBuf};
 
 pub fn run(
     local_dir: &PathBuf,
@@ -23,9 +23,11 @@ pub fn run(
 
     // 统计本地文件
     let local_files = collect_files(local_dir)?;
-    println!("📁 本地: {} 个文件 ({} bytes)",
+    println!(
+        "📁 本地: {} 个文件 ({} bytes)",
         local_files.len(),
-        local_files.iter().map(|(_, s)| s).sum::<u64>());
+        local_files.iter().map(|(_, s)| s).sum::<u64>()
+    );
 
     if dry_run {
         println!("🔍 DRY RUN 模式 (不会真正写入/删除)");
@@ -42,7 +44,11 @@ pub fn run(
         // 读取本地文件
         let content = match std::fs::read(&local_path) {
             Ok(c) => c,
-            Err(e) => { eprintln!("  ❌ 读 {}: {}", rel_path, e); errors += 1; continue; }
+            Err(e) => {
+                eprintln!("  ❌ 读 {}: {}", rel_path, e);
+                errors += 1;
+                continue;
+            }
         };
 
         if dry_run {
@@ -52,7 +58,9 @@ pub fn run(
         }
 
         match remote.write_file_with_mode(Path::new(&remote_path), &content, 0o644) {
-            Ok(_) => { uploaded += 1; }
+            Ok(_) => {
+                uploaded += 1;
+            }
             Err(e) => {
                 // 检查是否是二进制文件(无法用 exec 写入)
                 eprintln!("  ⚠ {} : {}", rel_path, e);
@@ -91,14 +99,22 @@ fn walk(base: &Path, current: &Path, files: &mut Vec<(String, u64)>) -> anyhow::
         let name = entry.file_name().to_string_lossy().to_string();
 
         // 跳过隐藏目录和常见垃圾
-        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "__pycache__" {
+        if name.starts_with('.')
+            || name == "node_modules"
+            || name == "target"
+            || name == "__pycache__"
+        {
             continue;
         }
 
         if path.is_dir() {
             walk(base, &path, files)?;
         } else if path.is_file() {
-            let rel = path.strip_prefix(base).unwrap_or(path.as_path()).to_string_lossy().replace('\\', "/");
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
             let size = entry.metadata()?.len();
             files.push((rel, size));
         }
@@ -109,7 +125,11 @@ fn walk(base: &Path, current: &Path, files: &mut Vec<(String, u64)>) -> anyhow::
 fn format_remote_path(remote_dir: &str, rel_path: &str, os: RemoteOs) -> String {
     match os {
         RemoteOs::Windows => {
-            format!("{}\\{}", remote_dir.trim_end_matches('\\'), rel_path.replace('/', "\\"))
+            format!(
+                "{}\\{}",
+                remote_dir.trim_end_matches('\\'),
+                rel_path.replace('/', "\\")
+            )
         }
         _ => format!("{}/{}", remote_dir.trim_end_matches('/'), rel_path),
     }

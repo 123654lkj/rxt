@@ -1,15 +1,25 @@
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// Directory tree — visualization or JSON output
-pub fn run(path: &Path, max_depth: Option<usize>, ignore_patterns: &[String], only_dirs: bool, json_output: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+pub fn run(
+    path: &Path,
+    max_depth: Option<usize>,
+    ignore_patterns: &[String],
+    only_dirs: bool,
+    json_output: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
     if let Some(rc) = remote {
         return run_remote(path, max_depth, only_dirs, rc);
     }
     if json_output {
         let mut entries: Vec<serde_json::Value> = Vec::new();
         collect_json(path, &mut entries, max_depth, ignore_patterns, only_dirs, 0)?;
-        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Array(entries))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Array(entries))?
+        );
         return Ok(());
     }
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or(".");
@@ -17,8 +27,19 @@ pub fn run(path: &Path, max_depth: Option<usize>, ignore_patterns: &[String], on
     print_tree(path, "", 0, max_depth, ignore_patterns, only_dirs)
 }
 
-fn collect_json(dir: &Path, out: &mut Vec<serde_json::Value>, max_depth: Option<usize>, ignore: &[String], only_dirs: bool, depth: usize) -> anyhow::Result<()> {
-    if let Some(md) = max_depth { if depth >= md { return Ok(()); } }
+fn collect_json(
+    dir: &Path,
+    out: &mut Vec<serde_json::Value>,
+    max_depth: Option<usize>,
+    ignore: &[String],
+    only_dirs: bool,
+    depth: usize,
+) -> anyhow::Result<()> {
+    if let Some(md) = max_depth {
+        if depth >= md {
+            return Ok(());
+        }
+    }
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -41,11 +62,23 @@ fn collect_json(dir: &Path, out: &mut Vec<serde_json::Value>, max_depth: Option<
         let path = entry.path();
         let is_dir = entry.file_type()?.is_dir();
         let name: String = entry.file_name().to_string_lossy().to_string();
-        if only_dirs && !is_dir { continue; }
+        if only_dirs && !is_dir {
+            continue;
+        }
         let mut obj = serde_json::Map::new();
         obj.insert("name".to_string(), serde_json::Value::String(name.clone()));
-        obj.insert("path".to_string(), serde_json::Value::String(path.display().to_string()));
-        obj.insert("type".to_string(), serde_json::Value::String(if is_dir { "dir".to_string() } else { "file".to_string() }));
+        obj.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.display().to_string()),
+        );
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String(if is_dir {
+                "dir".to_string()
+            } else {
+                "file".to_string()
+            }),
+        );
         obj.insert("depth".to_string(), serde_json::json!(depth));
         if let Ok(meta) = path.metadata() {
             obj.insert("size_bytes".to_string(), serde_json::json!(meta.len()));
@@ -60,8 +93,19 @@ fn collect_json(dir: &Path, out: &mut Vec<serde_json::Value>, max_depth: Option<
     Ok(())
 }
 
-fn print_tree(dir: &Path, prefix: &str, depth: usize, max_depth: Option<usize>, ignore: &[String], only_dirs: bool) -> anyhow::Result<()> {
-    if let Some(md) = max_depth { if depth >= md { return Ok(()); } }
+fn print_tree(
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    max_depth: Option<usize>,
+    ignore: &[String],
+    only_dirs: bool,
+) -> anyhow::Result<()> {
+    if let Some(md) = max_depth {
+        if depth >= md {
+            return Ok(());
+        }
+    }
 
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -86,14 +130,24 @@ fn print_tree(dir: &Path, prefix: &str, depth: usize, max_depth: Option<usize>, 
     let count = entries.len();
     for (i, entry) in entries.iter().enumerate() {
         let is_last = i == count - 1;
-        let connector = if is_last { "\u{2514}\u{2500}\u{2500} " } else { "\u{251c}\u{2500}\u{2500} " };
-        let next_prefix = if is_last { format!("{}    ", prefix) } else { format!("{}{}   ", prefix, "\u{2502}") };
+        let connector = if is_last {
+            "\u{2514}\u{2500}\u{2500} "
+        } else {
+            "\u{251c}\u{2500}\u{2500} "
+        };
+        let next_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}{}   ", prefix, "\u{2502}")
+        };
 
         let path = entry.path();
         let is_dir = entry.file_type()?.is_dir();
         let name = entry.file_name().to_string_lossy().to_string();
 
-        if only_dirs && !is_dir { continue; }
+        if only_dirs && !is_dir {
+            continue;
+        }
 
         if is_dir {
             println!("{}{}{}/", prefix, connector, name);
@@ -105,7 +159,12 @@ fn print_tree(dir: &Path, prefix: &str, depth: usize, max_depth: Option<usize>, 
     Ok(())
 }
 
-fn run_remote(path: &Path, max_depth: Option<usize>, only_dirs: bool, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+fn run_remote(
+    path: &Path,
+    max_depth: Option<usize>,
+    only_dirs: bool,
+    rc: &crate::remote::RemoteChannel,
+) -> anyhow::Result<()> {
     let cmd = if rc.is_windows() {
         format!("tree /F /A '{}'", path.display())
     } else {

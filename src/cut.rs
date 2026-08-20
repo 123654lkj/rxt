@@ -1,4 +1,4 @@
-﻿// rxt cut — 列提取
+// rxt cut — 列提取
 use std::io::{self, BufRead, Write};
 
 pub fn run(
@@ -8,7 +8,8 @@ pub fn run(
     only_delimited: bool,
 ) -> anyhow::Result<()> {
     let sep = delimiter.as_deref().unwrap_or("\t");
-    let field_indices: Vec<usize> = fields.split(',')
+    let field_indices: Vec<usize> = fields
+        .split(',')
         .filter_map(|s| {
             let s = s.trim();
             if s.contains('-') {
@@ -44,7 +45,8 @@ pub fn run(
         if only_delimited && parts.len() < 2 {
             continue;
         }
-        let selected: Vec<&str> = field_indices.iter()
+        let selected: Vec<&str> = field_indices
+            .iter()
             .filter_map(|i| {
                 let idx = i.saturating_sub(1);
                 parts.get(idx).copied()

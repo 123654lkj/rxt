@@ -13,8 +13,8 @@
 //!   rxt clip clear                   # 清空
 //!   echo "hi" | rxt clip write       # 管道写入
 
-use std::process::{Command, Stdio};
 use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 
 pub fn run(action: &str, content: Option<&str>, file: Option<&str>) -> anyhow::Result<()> {
     match action {
@@ -42,10 +42,15 @@ fn read() -> anyhow::Result<()> {
     {
         // PowerShell: Get-Clipboard 返回字符串,转 UTF-8 字节写 stdout
         let ps = "$c=Get-Clipboard -Raw; if($c){$b=[System.Text.Encoding]::UTF8.GetBytes($c); [Console]::OpenStandardOutput().Write($b,0,$b.Length)}";
-        let out = Command::new("powershell").args(["-NoProfile", "-Command", ps]).output()
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", ps])
+            .output()
             .map_err(|e| anyhow::anyhow!("剪贴板读取失败: {}", e))?;
         if !out.status.success() {
-            anyhow::bail!("剪贴板读取失败: {}", String::from_utf8_lossy(&out.stderr).trim());
+            anyhow::bail!(
+                "剪贴板读取失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         // PowerShell 在 UTF-8 输出开头会加 BOM, 去掉
         let mut bytes = out.stdout;
@@ -58,10 +63,15 @@ fn read() -> anyhow::Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         let (cmd, args) = read_cmd()?;
-        let out = Command::new(cmd).args(&args).output()
+        let out = Command::new(cmd)
+            .args(&args)
+            .output()
             .map_err(|e| anyhow::anyhow!("剪贴板读取失败({} 未安装?): {}", cmd, e))?;
         if !out.status.success() {
-            anyhow::bail!("剪贴板读取失败: {}", String::from_utf8_lossy(&out.stderr).trim());
+            anyhow::bail!(
+                "剪贴板读取失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         std::io::stdout().write_all(&out.stdout)?;
         Ok(())
@@ -76,12 +86,20 @@ fn write(data: &str) -> anyhow::Result<()> {
         // 这是绕开 stdin 管道编码地狱最可靠的方式
         let tmp = std::env::temp_dir().join(format!("rxt_clip_{}.txt", std::process::id()));
         std::fs::write(&tmp, data)?;
-        let ps = format!("$c=Get-Content -Path '{}' -Raw -Encoding UTF8; Set-Clipboard -Value $c", tmp.display());
-        let out = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output()
+        let ps = format!(
+            "$c=Get-Content -Path '{}' -Raw -Encoding UTF8; Set-Clipboard -Value $c",
+            tmp.display()
+        );
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
             .map_err(|e| anyhow::anyhow!("剪贴板写入失败: {}", e))?;
         let _ = std::fs::remove_file(&tmp);
         if !out.status.success() {
-            anyhow::bail!("剪贴板写入失败: {}", String::from_utf8_lossy(&out.stderr).trim());
+            anyhow::bail!(
+                "剪贴板写入失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         println!("✓ 已写入剪贴板 ({} 字符)", len);
         return Ok(());
@@ -90,9 +108,13 @@ fn write(data: &str) -> anyhow::Result<()> {
     {
         let _ = len;
         let (cmd, args) = write_cmd()?;
-        let mut child = Command::new(cmd).args(&args)
-            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn().map_err(|e| anyhow::anyhow!("剪贴板写入失败({} 未安装?): {}", cmd, e))?;
+        let mut child = Command::new(cmd)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("剪贴板写入失败({} 未安装?): {}", cmd, e))?;
         if let Some(stdin) = child.stdin.as_mut() {
             stdin.write_all(data.as_bytes())?;
         }
@@ -132,13 +154,21 @@ fn write_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
 }
 
 #[cfg(target_os = "macos")]
-fn read_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> { Ok(("pbpaste", vec![])) }
+fn read_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
+    Ok(("pbpaste", vec![]))
+}
 #[cfg(target_os = "macos")]
-fn write_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> { Ok(("pbcopy", vec![])) }
+fn write_cmd() -> anyhow::Result<(&'static str, Vec<&'static str>)> {
+    Ok(("pbcopy", vec![]))
+}
 
 /// 检查命令是否存在
 fn which(cmd: &str) -> bool {
-    Command::new(if cfg!(windows) {"where"} else {"which"})
-        .arg(cmd).stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
+    Command::new(if cfg!(windows) { "where" } else { "which" })
+        .arg(cmd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }

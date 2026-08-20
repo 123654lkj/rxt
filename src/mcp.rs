@@ -17,15 +17,14 @@
 //!   command = "rxt", args = ["mcp"]   # slim
 //!   command = "rxt", args = ["mcp", "--full"]
 
-use std::io::{self, BufRead, Write, BufReader};
-use std::process::Command;
 use serde_json::{json, Value};
+use std::io::{self, BufRead, BufReader, Write};
+use std::process::Command;
 
 /// 精简工具集：覆盖 90% agent 探索/读写，schema 体积约为 full 的 ~15%
 const SLIM_TOOLS: &[&str] = &[
-    "pack", "map", "digest", "ctx", "refs", "impact",
-    "grep", "find", "read", "write", "cat", "ls", "tree",
-    "edit", "sed", "struct",
+    "pack", "map", "digest", "ctx", "refs", "impact", "grep", "find", "read", "write", "cat", "ls",
+    "tree", "edit", "sed", "struct",
 ];
 
 pub fn run(sse_port: Option<u16>, slim: bool) -> anyhow::Result<()> {
@@ -57,7 +56,9 @@ fn stdio_server(slim: bool) -> anyhow::Result<()> {
             Ok(l) => l,
             Err(_) => break,
         };
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
 
         let req: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
@@ -79,7 +80,9 @@ fn stdio_server(slim: bool) -> anyhow::Result<()> {
             "tools/list" => Some(tools_schema.clone()),
             "tools/call" => Some(handle_tools_call(&params)),
             "ping" => Some(json!({})),
-            _ => Some(json!({"error":{"code":-32601,"message":format!("Method not found: {}",method)}})),
+            _ => Some(
+                json!({"error":{"code":-32601,"message":format!("Method not found: {}",method)}}),
+            ),
         };
 
         if let Some(res) = result {
@@ -122,25 +125,42 @@ fn build_tools_list(slim: bool) -> Value {
         Err(_) => return json!({"tools": []}),
     };
 
-    let commands = schema.get("commands").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+    let commands = schema
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut tools = Vec::new();
 
     for cmd in &commands {
         let name = cmd.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if name.is_empty() || name == "help" || name == "mcp" { continue; }
-        if slim && !SLIM_TOOLS.contains(&name) { continue; }
+        if name.is_empty() || name == "help" || name == "mcp" {
+            continue;
+        }
+        if slim && !SLIM_TOOLS.contains(&name) {
+            continue;
+        }
         let about = cmd.get("about").and_then(|a| a.as_str()).unwrap_or("");
-        let args = cmd.get("args").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        let args = cmd
+            .get("args")
+            .and_then(|a| a.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         // 构建 JSON Schema (inputSchema)
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for arg in &args {
             let aname = arg.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            if aname == "help" { continue; }
+            if aname == "help" {
+                continue;
+            }
             let atype = arg.get("type").and_then(|t| t.as_str()).unwrap_or("String");
             let help = arg.get("help").and_then(|h| h.as_str()).unwrap_or("");
-            let is_required = arg.get("required").and_then(|r| r.as_bool()).unwrap_or(false);
+            let is_required = arg
+                .get("required")
+                .and_then(|r| r.as_bool())
+                .unwrap_or(false);
             let long = arg.get("long").and_then(|l| l.as_str());
 
             // v0.4.1 修复 Bug2: MCP 参数名必须用真实的 CLI flag 名 (long, 已是 kebab-case),
@@ -155,14 +175,22 @@ fn build_tools_list(slim: bool) -> Value {
                 aname.to_string()
             };
 
-            let schema_type = if atype.contains("bool") { "boolean" }
-                              else if atype.contains("number") { "number" }
-                              else { "string" };
+            let schema_type = if atype.contains("bool") {
+                "boolean"
+            } else if atype.contains("number") {
+                "number"
+            } else {
+                "string"
+            };
             let mut prop = json!({"type": schema_type, "description": help});
             // 数组类型(Vec)
-            if atype.contains("Vec") { prop = json!({"type":"array","description":help}); }
+            if atype.contains("Vec") {
+                prop = json!({"type":"array","description":help});
+            }
             properties.insert(param_name, prop);
-            if is_required { required.push(aname.to_string()); }
+            if is_required {
+                required.push(aname.to_string());
+            }
         }
 
         tools.push(json!({
@@ -199,33 +227,54 @@ fn handle_tools_call(params: &Value) -> Value {
                 if let Some(s) = val.as_str() {
                     pos_values.push(s.to_string());
                 } else if let Some(n) = val.as_f64() {
-                    pos_values.push(if n.fract()==0.0 {format!("{}",n as i64)} else {format!("{}",n)});
+                    pos_values.push(if n.fract() == 0.0 {
+                        format!("{}", n as i64)
+                    } else {
+                        format!("{}", n)
+                    });
                 } else if let Some(arr) = val.as_array() {
                     // v0.4.3: 位置参数也可能是数组 (如 write 的 content: Vec<String>)
                     // 之前漏了 array 分支, 导致 MCP 传 content:["x"] 时内容完全丢失。
                     for a in arr {
-                        if let Some(s) = a.as_str() { pos_values.push(s.to_string()); }
-                        else if let Some(n) = a.as_f64() { pos_values.push(if n.fract()==0.0 {format!("{}",n as i64)} else {format!("{}",n)}); }
+                        if let Some(s) = a.as_str() {
+                            pos_values.push(s.to_string());
+                        } else if let Some(n) = a.as_f64() {
+                            pos_values.push(if n.fract() == 0.0 {
+                                format!("{}", n as i64)
+                            } else {
+                                format!("{}", n)
+                            });
+                        }
                     }
                 }
             }
         }
         // 再处理 flag 参数
         for (key, val) in obj {
-            if positional.contains(key) { continue; } // 位置参数已处理
-            // bool true -> 加 flag, false -> 跳过
+            if positional.contains(key) {
+                continue;
+            } // 位置参数已处理
+              // bool true -> 加 flag, false -> 跳过
             if let Some(b) = val.as_bool() {
-                if b { cmd_args.push(format!("--{}", key)); }
+                if b {
+                    cmd_args.push(format!("--{}", key));
+                }
                 continue;
             }
             cmd_args.push(format!("--{}", key));
             if let Some(s) = val.as_str() {
                 cmd_args.push(s.to_string());
             } else if let Some(n) = val.as_f64() {
-                cmd_args.push(if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{}", n) });
+                cmd_args.push(if n.fract() == 0.0 {
+                    format!("{}", n as i64)
+                } else {
+                    format!("{}", n)
+                });
             } else if let Some(arr) = val.as_array() {
                 for a in arr {
-                    if let Some(s) = a.as_str() { cmd_args.push(s.to_string()); }
+                    if let Some(s) = a.as_str() {
+                        cmd_args.push(s.to_string());
+                    }
                 }
             }
         }
@@ -239,9 +288,7 @@ fn handle_tools_call(params: &Value) -> Value {
 
     // 执行 rxt 子命令
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rxt"));
-    let result = Command::new(&exe)
-        .args(&cmd_args)
-        .output();
+    let result = Command::new(&exe).args(&cmd_args).output();
 
     let (content, is_error) = match result {
         Ok(o) => {
@@ -276,10 +323,18 @@ fn get_positional_args(cmd_name: &str) -> Vec<String> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    let commands = schema.get("commands").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+    let commands = schema
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
     for cmd in &commands {
         if cmd.get("name").and_then(|n| n.as_str()) == Some(cmd_name) {
-            let args = cmd.get("args").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+            let args = cmd
+                .get("args")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
             let mut pos = Vec::new();
             for arg in &args {
                 let has_long = arg.get("long").is_some();

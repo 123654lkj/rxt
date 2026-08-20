@@ -37,7 +37,10 @@ pub fn run(
             obj.insert("lines".to_string(), serde_json::json!(text.lines().count()));
         }
         if all || words_only {
-            obj.insert("words".to_string(), serde_json::json!(text.split_whitespace().count()));
+            obj.insert(
+                "words".to_string(),
+                serde_json::json!(text.split_whitespace().count()),
+            );
         }
         if all || chars_only {
             obj.insert("chars".to_string(), serde_json::json!(text.chars().count()));
@@ -46,9 +49,15 @@ pub fn run(
             obj.insert("bytes".to_string(), serde_json::json!(content.len()));
         }
         if max_line {
-            obj.insert("max_line".to_string(), serde_json::json!(text.lines().map(|l| l.len()).max().unwrap_or(0)));
+            obj.insert(
+                "max_line".to_string(),
+                serde_json::json!(text.lines().map(|l| l.len()).max().unwrap_or(0)),
+            );
         }
-        println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(obj))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::Value::Object(obj))?
+        );
         return Ok(());
     }
 

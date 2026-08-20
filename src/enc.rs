@@ -32,8 +32,8 @@ pub fn run(mode: &str, input: Option<&str>, decode: bool) -> anyhow::Result<()> 
         "url" => {
             if decode {
                 let text = String::from_utf8_lossy(&data).into_owned();
-                let decoded = urlencoding::decode(&text)
-                    .map_err(|e| anyhow::anyhow!("URL decode: {}", e))?;
+                let decoded =
+                    urlencoding::decode(&text).map_err(|e| anyhow::anyhow!("URL decode: {}", e))?;
                 println!("{}", decoded);
             } else {
                 let text = String::from_utf8_lossy(&data);

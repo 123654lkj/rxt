@@ -1,6 +1,6 @@
-use std::path::Path;
-use std::fs;
 use serde_json::Value;
+use std::fs;
+use std::path::Path;
 
 pub fn run(path: &Path, last: usize, json_output: bool) -> anyhow::Result<()> {
     let _ = fs::File::open(path)?;
@@ -19,7 +19,8 @@ pub fn run(path: &Path, last: usize, json_output: bool) -> anyhow::Result<()> {
             if t == "event_msg" {
                 if let Some(payload) = val.get("payload") {
                     let msg_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let text = payload.get("message")
+                    let text = payload
+                        .get("message")
                         .or_else(|| payload.get("text"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
@@ -39,15 +40,28 @@ pub fn run(path: &Path, last: usize, json_output: bool) -> anyhow::Result<()> {
         }
     }
 
-    let start = if exchanges.len() > last { exchanges.len() - last } else { 0 };
+    let start = if exchanges.len() > last {
+        exchanges.len() - last
+    } else {
+        0
+    };
     let recent = &exchanges[start..];
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&recent.iter().map(|(u, a)| {
-            serde_json::json!({"user": u, "assistant": a})
-        }).collect::<Vec<_>>())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &recent
+                    .iter()
+                    .map(|(u, a)| { serde_json::json!({"user": u, "assistant": a}) })
+                    .collect::<Vec<_>>()
+            )?
+        );
     } else {
-        println!("=== Session: {} ===", path.file_name().unwrap_or_default().to_string_lossy());
+        println!(
+            "=== Session: {} ===",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
         println!("Total exchanges: {}", exchanges.len());
         println!();
         for (i, (user, assistant)) in recent.iter().enumerate() {

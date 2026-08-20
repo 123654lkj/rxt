@@ -12,8 +12,8 @@
 //!   rxt search --name "*.rs"        # 强制搜文件名
 //!   rxt search --content "TODO"     # 强制搜内容
 
-use std::path::Path;
 use crate::common;
+use std::path::Path;
 
 pub fn run(
     query: &str,
@@ -53,13 +53,12 @@ fn search_by_name(
     max: usize,
 ) -> anyhow::Result<()> {
     // 用 walk_clean 遍历
-    let exts: Option<Vec<&str>> = file_type.map(|t| {
-        t.split(',').map(|s| s.trim()).collect()
-    });
+    let exts: Option<Vec<&str>> = file_type.map(|t| t.split(',').map(|s| s.trim()).collect());
     let exts_ref = exts.as_deref();
 
     let files = common::walk_clean(root, exts_ref, None);
-    let results: Vec<_> = files.into_iter()
+    let results: Vec<_> = files
+        .into_iter()
         .filter(|p| {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             common::glob_match(pattern, name)
@@ -68,21 +67,27 @@ fn search_by_name(
         .collect();
 
     if json {
-        let entries: Vec<serde_json::Value> = results.iter().map(|p| {
-            let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            serde_json::json!({
-                "path": p.to_string_lossy(),
-                "name": name,
-                "relative": rel,
+        let entries: Vec<serde_json::Value> = results
+            .iter()
+            .map(|p| {
+                let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy();
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                serde_json::json!({
+                    "path": p.to_string_lossy(),
+                    "name": name,
+                    "relative": rel,
+                })
             })
-        }).collect();
-        println!("{}", serde_json::json!({
-            "mode": "name",
-            "pattern": pattern,
-            "count": entries.len(),
-            "results": entries,
-        }));
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "mode": "name",
+                "pattern": pattern,
+                "count": entries.len(),
+                "results": entries,
+            })
+        );
     } else {
         if results.is_empty() {
             println!("未找到匹配 '{}' 的文件", pattern);
@@ -105,25 +110,26 @@ fn search_by_content(
     json: bool,
     max: usize,
 ) -> anyhow::Result<()> {
-    let exts: Option<Vec<&str>> = file_type.map(|t| {
-        t.split(',').map(|s| s.trim()).collect()
-    });
+    let exts: Option<Vec<&str>> = file_type.map(|t| t.split(',').map(|s| s.trim()).collect());
     let exts_ref = exts.as_deref();
 
     let files = common::walk_clean(root, exts_ref, None);
     let mut matches: Vec<(std::path::PathBuf, usize, String)> = Vec::new();
 
-    let re = regex::Regex::new(pattern)
-        .map_err(|e| anyhow::anyhow!("正则编译失败: {}", e))?;
+    let re = regex::Regex::new(pattern).map_err(|e| anyhow::anyhow!("正则编译失败: {}", e))?;
 
     for file in files {
-        if matches.len() >= max { break; }
+        if matches.len() >= max {
+            break;
+        }
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
             Err(_) => continue,
         };
         for (lineno, line) in content.lines().enumerate() {
-            if matches.len() >= max { break; }
+            if matches.len() >= max {
+                break;
+            }
             if re.is_match(line) {
                 matches.push((file.clone(), lineno + 1, line.trim().to_string()));
             }
@@ -131,20 +137,26 @@ fn search_by_content(
     }
 
     if json {
-        let results: Vec<serde_json::Value> = matches.iter().map(|(path, lineno, line)| {
-            let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
-            serde_json::json!({
-                "file": rel,
-                "line": lineno,
-                "text": line,
+        let results: Vec<serde_json::Value> = matches
+            .iter()
+            .map(|(path, lineno, line)| {
+                let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
+                serde_json::json!({
+                    "file": rel,
+                    "line": lineno,
+                    "text": line,
+                })
             })
-        }).collect();
-        println!("{}", serde_json::json!({
-            "mode": "content",
-            "pattern": pattern,
-            "count": results.len(),
-            "results": results,
-        }));
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "mode": "content",
+                "pattern": pattern,
+                "count": results.len(),
+                "results": results,
+            })
+        );
     } else {
         if matches.is_empty() {
             println!("未找到包含 '{}' 的行", pattern);

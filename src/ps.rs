@@ -2,9 +2,17 @@
 //! 对标 PowerShell: Get-Process / Stop-Process
 //! 跨平台: sysinfo crate 提供
 
-use sysinfo::{System, ProcessRefreshKind, Users, ProcessesToUpdate};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, Users};
 
-pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str, tree: bool, json: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+pub fn run(
+    name_filter: Option<&str>,
+    kill: Option<&str>,
+    top: usize,
+    sort: &str,
+    tree: bool,
+    json: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
     // 远程模式: 在远端执行等效命令
     if let Some(rc) = remote {
         return run_remote(name_filter, kill, top, sort, rc);
@@ -30,14 +38,20 @@ pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str
 
     // 排序
     match sort {
-        "cpu" => procs.sort_by(|a, b| b.cpu_usage().partial_cmp(&a.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal)),
+        "cpu" => procs.sort_by(|a, b| {
+            b.cpu_usage()
+                .partial_cmp(&a.cpu_usage())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
         "pid" => procs.sort_by_key(|p| p.pid().as_u32()),
         "name" => procs.sort_by_key(|p| p.name().to_string_lossy().to_lowercase()),
         _ => procs.sort_by(|a, b| b.memory().cmp(&a.memory())),
     }
 
     // top 限制
-    if top > 0 && procs.len() > top { procs.truncate(top); }
+    if top > 0 && procs.len() > top {
+        procs.truncate(top);
+    }
 
     let users = Users::new_with_refreshed_list();
 
@@ -63,8 +77,10 @@ pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str
         return Ok(());
     }
 
-    println!("{:>7} {:>6} {:>10} {:<10} {:<8} {}",
-             "PID", "CPU%", "MEM", "USER", "ELAPSED", "NAME");
+    println!(
+        "{:>7} {:>6} {:>10} {:<10} {:<8} {}",
+        "PID", "CPU%", "MEM", "USER", "ELAPSED", "NAME"
+    );
     println!("{}", "-".repeat(70));
     let now = System::uptime();
     let boot = System::boot_time();
@@ -73,11 +89,25 @@ pub fn run(name_filter: Option<&str>, kill: Option<&str>, top: usize, sort: &str
         let user = user_of(&users, p);
         // start_time 是绝对时间戳(UNIX epoch), elapsed = 当前epoch - 启动epoch
         let elapsed = format_elapsed(now_epoch.saturating_sub(p.start_time()));
-        println!("{:>7} {:>5.1}% {:>10} {:<10} {:<8} {}",
-                 p.pid().as_u32(), p.cpu_usage(), fmt_bytes(p.memory()),
-                 user, elapsed, p.name().to_string_lossy());
+        println!(
+            "{:>7} {:>5.1}% {:>10} {:<10} {:<8} {}",
+            p.pid().as_u32(),
+            p.cpu_usage(),
+            fmt_bytes(p.memory()),
+            user,
+            elapsed,
+            p.name().to_string_lossy()
+        );
     }
-    println!("\n共 {} 个进程{}", procs.len(), if name_filter.is_some() { " (已过滤)" } else { "" });
+    println!(
+        "\n共 {} 个进程{}",
+        procs.len(),
+        if name_filter.is_some() {
+            " (已过滤)"
+        } else {
+            ""
+        }
+    );
     Ok(())
 }
 
@@ -106,7 +136,9 @@ fn do_kill(sys: &System, target: &str) -> anyhow::Result<()> {
                 }
             }
         }
-        if killed == 0 { anyhow::bail!("找不到进程: {}", target); }
+        if killed == 0 {
+            anyhow::bail!("找不到进程: {}", target);
+        }
     }
     println!("共终止 {} 个进程", killed);
     Ok(())
@@ -114,7 +146,9 @@ fn do_kill(sys: &System, target: &str) -> anyhow::Result<()> {
 
 fn print_tree(sys: &System) {
     // 找根进程(ppid=0 或不存在)
-    let mut roots: Vec<_> = sys.processes().values()
+    let mut roots: Vec<_> = sys
+        .processes()
+        .values()
         .filter(|p| {
             let ppid = p.parent();
             ppid.is_none() || sys.process(ppid.unwrap()).is_none()
@@ -128,9 +162,16 @@ fn print_tree(sys: &System) {
 
 fn print_subtree(sys: &System, p: &sysinfo::Process, depth: usize) {
     let indent = "  ".repeat(depth);
-    println!("{}{} ({} {})",
-             indent, p.name().to_string_lossy(), p.pid().as_u32(), fmt_bytes(p.memory()));
-    let mut children: Vec<_> = sys.processes().values()
+    println!(
+        "{}{} ({} {})",
+        indent,
+        p.name().to_string_lossy(),
+        p.pid().as_u32(),
+        fmt_bytes(p.memory())
+    );
+    let mut children: Vec<_> = sys
+        .processes()
+        .values()
         .filter(|c| c.parent() == Some(p.pid()))
         .collect();
     children.sort_by_key(|c| c.pid().as_u32());
@@ -149,17 +190,28 @@ fn user_of(users: &Users, p: &sysinfo::Process) -> String {
 }
 
 fn fmt_bytes(b: u64) -> String {
-    const MB: u64 = 1024 * 1024; const GB: u64 = MB * 1024;
-    if b >= GB { format!("{:.1}G", b as f64 / GB as f64) }
-    else if b >= MB { format!("{:.0}M", b as f64 / MB as f64) }
-    else { format!("{}K", b / 1024) }
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = MB * 1024;
+    if b >= GB {
+        format!("{:.1}G", b as f64 / GB as f64)
+    } else if b >= MB {
+        format!("{:.0}M", b as f64 / MB as f64)
+    } else {
+        format!("{}K", b / 1024)
+    }
 }
 
 fn format_elapsed(sec: u64) -> String {
-    let d = sec / 86400; let h = (sec % 86400) / 3600; let m = (sec % 3600) / 60;
-    if d > 0 { format!("{}d{}h", d, h) }
-    else if h > 0 { format!("{}h{}m", h, m) }
-    else { format!("{}m", m) }
+    let d = sec / 86400;
+    let h = (sec % 86400) / 3600;
+    let m = (sec % 3600) / 60;
+    if d > 0 {
+        format!("{}d{}h", d, h)
+    } else if h > 0 {
+        format!("{}h{}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
 }
 
 /// 简易 glob: * 匹配任意, ? 匹配单字符
@@ -172,12 +224,16 @@ fn glob_match(pat: &str, s: &str) -> bool {
     glob_rec(&pb, 0, &sb, 0)
 }
 fn glob_rec(p: &[char], pi: usize, s: &[char], si: usize) -> bool {
-    if pi == p.len() { return si == s.len(); }
+    if pi == p.len() {
+        return si == s.len();
+    }
     match p[pi] {
         '*' => {
             // * 匹配 0 到剩余全部
             for k in si..=s.len() {
-                if glob_rec(p, pi + 1, s, k) { return true; }
+                if glob_rec(p, pi + 1, s, k) {
+                    return true;
+                }
             }
             false
         }
@@ -187,7 +243,13 @@ fn glob_rec(p: &[char], pi: usize, s: &[char], si: usize) -> bool {
 }
 
 /// 远程 ps: Windows 用 Get-Process, Linux 用 ps
-fn run_remote(name_filter: Option<&str>, kill: Option<&str>, top: usize, _sort: &str, rc: &crate::remote::RemoteChannel) -> anyhow::Result<()> {
+fn run_remote(
+    name_filter: Option<&str>,
+    kill: Option<&str>,
+    top: usize,
+    _sort: &str,
+    rc: &crate::remote::RemoteChannel,
+) -> anyhow::Result<()> {
     // kill 模式
     if let Some(target) = kill {
         if rc.is_windows() {
@@ -210,7 +272,11 @@ fn run_remote(name_filter: Option<&str>, kill: Option<&str>, top: usize, _sort: 
         } else {
             String::new()
         };
-        let top_limit = if top > 0 { format!(" | Select-Object -First {}", top) } else { String::new() };
+        let top_limit = if top > 0 {
+            format!(" | Select-Object -First {}", top)
+        } else {
+            String::new()
+        };
         let cmd = format!(
             "Get-Process{}{} | Sort-Object WorkingSet64 -Descending | Select-Object Id, ProcessName, CPU, @{{N='MemMB';E={{[math]::Round($_.WorkingSet64/1MB,1)}}}} | Format-Table -AutoSize",
             filter, top_limit
@@ -224,7 +290,11 @@ fn run_remote(name_filter: Option<&str>, kill: Option<&str>, top: usize, _sort: 
         } else {
             String::new()
         };
-        let top_limit = if top > 0 { format!(" | head -n {}", top + 1) } else { String::new() };
+        let top_limit = if top > 0 {
+            format!(" | head -n {}", top + 1)
+        } else {
+            String::new()
+        };
         let cmd = format!("ps aux --sort=-%mem{}{}", filter, top_limit);
         let out = rc.exec(&cmd)?;
         println!("{}", out.trim_end());

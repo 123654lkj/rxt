@@ -1,4 +1,4 @@
-﻿// rxt build — 智能 Rust 构建
+// rxt build — 智能 Rust 构建
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -40,9 +40,7 @@ pub fn run(
         return list_installed_targets();
     }
 
-    let profile = profile
-        .or(cfg.profile.as_deref())
-        .unwrap_or("release");
+    let profile = profile.or(cfg.profile.as_deref()).unwrap_or("release");
 
     let mut args = vec!["build".to_string()];
     args.push("--target".to_string());
@@ -75,9 +73,21 @@ pub fn run(
         args.push("--workspace".to_string());
     }
 
-    println!("  cargo {} --target {}", if profile == "release" { "build --release" } else { "build" }, target);
-    if let Some(b) = bin { println!("  binary: {}", b); }
-    if !feat_list.is_empty() { println!("  features: {}", feat_list.join(", ")); }
+    println!(
+        "  cargo {} --target {}",
+        if profile == "release" {
+            "build --release"
+        } else {
+            "build"
+        },
+        target
+    );
+    if let Some(b) = bin {
+        println!("  binary: {}", b);
+    }
+    if !feat_list.is_empty() {
+        println!("  features: {}", feat_list.join(", "));
+    }
     println!();
 
     let start = Instant::now();
@@ -134,7 +144,9 @@ fn find_project_root(dir: Option<&str>) -> anyhow::Result<PathBuf> {
 
 fn load_config(root: &Path) -> Option<BuildConfig> {
     let path = root.join(".rxt.toml");
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let content = std::fs::read_to_string(path).ok()?;
     toml::from_str(&content).ok()?
 }
@@ -155,10 +167,14 @@ fn show_binaries(dir: &Path, filter: Option<&str>) {
             let p = entry.path();
             if p.is_file() {
                 let is_exe = p.extension().map(|e| e == "exe").unwrap_or(false);
-                if !is_exe && !is_executable(&p) { continue; }
+                if !is_exe && !is_executable(&p) {
+                    continue;
+                }
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                 if let Some(f) = filter {
-                    if !name.contains(f) && name != f && !name.starts_with(f) { continue; }
+                    if !name.contains(f) && name != f && !name.starts_with(f) {
+                        continue;
+                    }
                 }
                 if let Ok(meta) = p.metadata() {
                     let size = meta.len();
@@ -174,7 +190,9 @@ fn show_binaries(dir: &Path, filter: Option<&str>) {
                 }
             }
         }
-        if !found { println!("  (no binaries found in {})", dir.display()); }
+        if !found {
+            println!("  (no binaries found in {})", dir.display());
+        }
     }
 }
 
@@ -182,7 +200,9 @@ fn is_executable(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        p.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {

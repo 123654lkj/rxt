@@ -1,6 +1,6 @@
-﻿// rxt uniq — 去重
-use std::io::{self, BufRead, Write};
+// rxt uniq — 去重
 use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
 
 pub fn run(
     input: Option<&str>,
@@ -22,12 +22,20 @@ pub fn run(
     if count {
         let mut freq: HashMap<String, usize> = HashMap::new();
         for line in &lines {
-            let key = if ignore_case { line.to_lowercase() } else { line.clone() };
+            let key = if ignore_case {
+                line.to_lowercase()
+            } else {
+                line.clone()
+            };
             *freq.entry(key).or_insert(0) += 1;
         }
         let mut seen = std::collections::HashSet::new();
         for line in &lines {
-            let key = if ignore_case { line.to_lowercase() } else { line.clone() };
+            let key = if ignore_case {
+                line.to_lowercase()
+            } else {
+                line.clone()
+            };
             if seen.insert(key.clone()) {
                 let c = freq.get(&key).unwrap_or(&0);
                 writeln!(handle, "{:>7} {}", c, line)?;
@@ -39,12 +47,20 @@ pub fn run(
     if duplicates {
         let mut freq: HashMap<String, usize> = HashMap::new();
         for line in &lines {
-            let key = if ignore_case { line.to_lowercase() } else { line.clone() };
+            let key = if ignore_case {
+                line.to_lowercase()
+            } else {
+                line.clone()
+            };
             *freq.entry(key).or_insert(0) += 1;
         }
         let mut seen = std::collections::HashSet::new();
         for line in &lines {
-            let key = if ignore_case { line.to_lowercase() } else { line.clone() };
+            let key = if ignore_case {
+                line.to_lowercase()
+            } else {
+                line.clone()
+            };
             if *freq.get(&key).unwrap_or(&0) > 1 && seen.insert(key.clone()) {
                 writeln!(handle, "{}", line)?;
             }
@@ -54,7 +70,11 @@ pub fn run(
 
     let mut seen = std::collections::HashSet::new();
     for line in &lines {
-        let key = if ignore_case { line.to_lowercase() } else { line.clone() };
+        let key = if ignore_case {
+            line.to_lowercase()
+        } else {
+            line.clone()
+        };
         if seen.insert(key) {
             writeln!(handle, "{}", line)?;
         }

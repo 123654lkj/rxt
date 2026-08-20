@@ -34,13 +34,11 @@ pub fn run_remote(target: &str, is_group: bool) -> anyhow::Result<()> {
             Ok(mut remote) => {
                 // v0.7.5: 复用 remote.probe_rxt_path() 跨平台探测, 消除重复的 PowerShell 逻辑
                 let ver = match remote.probe_rxt_path() {
-                    Some(path) => {
-                        match remote.exec(&format!("{} --version", path)) {
-                            Ok(out) => out.trim().lines().next().unwrap_or("?").to_string(),
-                            Err(_) => "ERROR".to_string(),
-                        }
-                    }
-                    None => "?".to_string(),  // 远端无 rxt
+                    Some(path) => match remote.exec(&format!("{} --version", path)) {
+                        Ok(out) => out.trim().lines().next().unwrap_or("?").to_string(),
+                        Err(_) => "ERROR".to_string(),
+                    },
+                    None => "?".to_string(), // 远端无 rxt
                 };
                 println!("  {:<10} {}", host_name, ver);
                 versions.push((host_name.clone(), ver));
@@ -66,7 +64,11 @@ pub fn run_remote(target: &str, is_group: bool) -> anyhow::Result<()> {
             by_ver.entry(ver).or_default().push(host);
         }
         for (ver, hs) in &by_ver {
-            println!("   {} ← {}", ver, hs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+            println!(
+                "   {} ← {}",
+                ver,
+                hs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
         }
     }
 

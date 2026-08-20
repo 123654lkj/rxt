@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::io::{self, Write, BufWriter};
-use crate::signature::{FileSignature, to_utf8_lf};
-use std::collections::BTreeMap;
-use regex::Regex;
+use crate::signature::{to_utf8_lf, FileSignature};
 use rayon::prelude::*;
+use regex::Regex;
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 /// 路径感观：用于 `rxt find /dir --name '*.rs'`（query 位当目录）
 fn looks_like_path(s: &str) -> bool {
@@ -49,7 +49,8 @@ pub fn run(
     // 远程：交给远端 rxt 算完回传（与 pack 同模式）
     if let Some(rc) = remote {
         let mut args: Vec<String> = vec!["find".into()];
-        let (eff_query, eff_path) = resolve_query_path(query, path, name_pattern, do_stats, replace);
+        let (eff_query, eff_path) =
+            resolve_query_path(query, path, name_pattern, do_stats, replace);
         if let Some(q) = eff_query {
             args.push(q.to_string());
         }
@@ -121,7 +122,8 @@ pub fn run(
         anyhow::bail!("远端无 rxt，无法 find。请先安装 rxt 0.8.6+ 或改用本地路径。");
     }
 
-    let (eff_query, search_dir_owned) = resolve_query_path(query, path, name_pattern, do_stats, replace);
+    let (eff_query, search_dir_owned) =
+        resolve_query_path(query, path, name_pattern, do_stats, replace);
     let search_dir = search_dir_owned.as_path();
 
     let compiled_re = if use_regex {
@@ -202,24 +204,64 @@ fn resolve_query_path<'a>(
 
 fn ext_for_type(t: &str) -> Option<&'static str> {
     match t {
-        "rs" => Some("rs"), "py" => Some("py"), "md" => Some("md"),
-        "toml" => Some("toml"), "json" => Some("json"), "js" => Some("js"),
-        "ts" => Some("ts"), "c" => Some("c"), "h" => Some("h"),
-        "cpp" => Some("cpp"), "go" => Some("go"), "sh" => Some("sh"),
+        "rs" => Some("rs"),
+        "py" => Some("py"),
+        "md" => Some("md"),
+        "toml" => Some("toml"),
+        "json" => Some("json"),
+        "js" => Some("js"),
+        "ts" => Some("ts"),
+        "c" => Some("c"),
+        "h" => Some("h"),
+        "cpp" => Some("cpp"),
+        "go" => Some("go"),
+        "sh" => Some("sh"),
         "yaml" | "yml" => Some("yml"),
         _ => None,
     }
 }
 
 fn is_text_file(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).map(|e| matches!(e,
-        "rs"|"py"|"md"|"toml"|"json"|"js"|"ts"|"c"|"h"|"cpp"|"go"|"sh"|"yml"|"yaml"|"txt"|"cfg"|"ini"|"conf"|"lock"|"css"|"html"|"java"|"kt"|"swift"|"rb"|"php"
-    )).unwrap_or(false)
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e,
+                "rs" | "py"
+                    | "md"
+                    | "toml"
+                    | "json"
+                    | "js"
+                    | "ts"
+                    | "c"
+                    | "h"
+                    | "cpp"
+                    | "go"
+                    | "sh"
+                    | "yml"
+                    | "yaml"
+                    | "txt"
+                    | "cfg"
+                    | "ini"
+                    | "conf"
+                    | "lock"
+                    | "css"
+                    | "html"
+                    | "java"
+                    | "kt"
+                    | "swift"
+                    | "rb"
+                    | "php"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Iterate files: handles both single-file and directory cases (fixes "single-file mode broken" bug).
 fn for_each_file(target: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&Path)) {
-    if !target.exists() { return; }
+    if !target.exists() {
+        return;
+    }
     if target.is_file() {
         // Single-file mode — apply extension filter and text-file check
         if let Some(ext) = ext_filter {
@@ -231,7 +273,9 @@ fn for_each_file(target: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&P
         }
         return;
     }
-    if !target.is_dir() { return; }
+    if !target.is_dir() {
+        return;
+    }
     walk_files(target, ext_filter, cb);
 }
 
@@ -241,12 +285,23 @@ fn walk_files(dir: &Path, ext_filter: Option<&str>, cb: &mut impl FnMut(&Path)) 
             let p = entry.path();
             if p.is_dir() {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with('.') || name == "node_modules" || name == "target" || name == "vendor" || name == ".git" { continue; }
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || name == "target"
+                    || name == "vendor"
+                    || name == ".git"
+                {
+                    continue;
+                }
                 walk_files(&p, ext_filter, cb);
             } else if p.is_file() {
                 if let Some(ext) = ext_filter {
-                    if p.extension().and_then(|e| e.to_str()) == Some(ext) { cb(&p); }
-                } else if is_text_file(&p) { cb(&p); }
+                    if p.extension().and_then(|e| e.to_str()) == Some(ext) {
+                        cb(&p);
+                    }
+                } else if is_text_file(&p) {
+                    cb(&p);
+                }
             }
         }
     }
@@ -289,7 +344,11 @@ fn search_content(
                     hits.push((path.clone(), i + 1, line.to_string()));
                 }
             }
-            if hits.is_empty() { None } else { Some(hits) }
+            if hits.is_empty() {
+                None
+            } else {
+                Some(hits)
+            }
         })
         .flatten()
         .collect();
@@ -298,11 +357,18 @@ fn search_content(
     // Apply pagination
     let mut results = results;
     if offset > 0 {
-        if offset >= results.len() { results.clear(); }
-        else { results = results.split_off(offset); }
+        if offset >= results.len() {
+            results.clear();
+        } else {
+            results = results.split_off(offset);
+        }
     }
-    if let Some(h) = head { results.truncate(h); }
-    if let Some(m) = max_results { results.truncate(m); }
+    if let Some(h) = head {
+        results.truncate(h);
+    }
+    if let Some(m) = max_results {
+        results.truncate(m);
+    }
 
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -316,7 +382,9 @@ fn search_content(
     } else if only_count {
         writeln!(out, "Matches: {} (in {} files)", results.len(), {
             let mut s: std::collections::HashSet<&Path> = std::collections::HashSet::new();
-            for (p, _, _) in &results { s.insert(p); }
+            for (p, _, _) in &results {
+                s.insert(p);
+            }
             s.len()
         })?;
     } else {
@@ -334,7 +402,12 @@ fn search_content(
     Ok(())
 }
 
-fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>, json_output: bool) -> anyhow::Result<()> {
+fn search_by_name(
+    dir: &Path,
+    pattern: &str,
+    file_type: Option<&str>,
+    json_output: bool,
+) -> anyhow::Result<()> {
     let ext_filter = file_type.and_then(|t| ext_for_type(t));
     let mut results: Vec<(PathBuf, u64)> = Vec::new();
     let is_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
@@ -367,7 +440,9 @@ fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>, json_outpu
             name.to_lowercase().contains(&pattern_lower)
         };
         if matched {
-            if let Ok(meta) = path.metadata() { results.push((path.to_path_buf(), meta.len())); }
+            if let Ok(meta) = path.metadata() {
+                results.push((path.to_path_buf(), meta.len()));
+            }
         }
     });
     results.sort_by_key(|(_, size)| *size);
@@ -376,16 +451,21 @@ fn search_by_name(dir: &Path, pattern: &str, file_type: Option<&str>, json_outpu
     let mut out = BufWriter::new(stdout.lock());
 
     if json_output {
-        let j: Vec<serde_json::Value> = results.iter().map(|(p, s)| {
-            serde_json::json!({"path": p.display().to_string(), "size_bytes": s})
-        }).collect();
+        let j: Vec<serde_json::Value> = results
+            .iter()
+            .map(|(p, s)| serde_json::json!({"path": p.display().to_string(), "size_bytes": s}))
+            .collect();
         writeln!(out, "{}", serde_json::to_string_pretty(&j)?)?;
     } else {
         writeln!(out, "Found {} files matching '{}':", results.len(), pattern)?;
         for (path, size) in &results {
-            let s = if *size > 1048576 { format!("{:.1} MB", *size as f64 / 1048576.0) }
-                    else if *size > 1024 { format!("{:.1} KB", *size as f64 / 1024.0) }
-                    else { format!("{} B", size) };
+            let s = if *size > 1048576 {
+                format!("{:.1} MB", *size as f64 / 1048576.0)
+            } else if *size > 1024 {
+                format!("{:.1} KB", *size as f64 / 1024.0)
+            } else {
+                format!("{} B", size)
+            };
             writeln!(out, "  {} ({})", path.display(), s)?;
         }
     }
@@ -398,7 +478,11 @@ fn stats_by_type(dir: &Path, json_output: bool) -> anyhow::Result<()> {
     let mut total_files = 0usize;
     let mut total_lines = 0usize;
     for_each_file(dir, None, &mut |path| {
-        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_string()).unwrap_or_else(|| "_none".to_string());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "_none".to_string());
         if let Ok(raw) = fs::read(path) {
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
@@ -433,13 +517,24 @@ fn stats_by_type(dir: &Path, json_output: bool) -> anyhow::Result<()> {
             writeln!(out, "{:<10} {:>8} {:>10}", ext, f, l)?;
         }
         writeln!(out, "{:-<10} {:-<8} {:-<10}", "", "", "")?;
-        writeln!(out, "{:<10} {:>8} {:>10}", "TOTAL", total_files, total_lines)?;
+        writeln!(
+            out,
+            "{:<10} {:>8} {:>10}",
+            "TOTAL", total_files, total_lines
+        )?;
     }
     out.flush()?;
     Ok(())
 }
 
-fn run_replace(dir: &Path, name_pattern: Option<&str>, file_type: Option<&str>, old: &str, new: &str, preview: bool) -> anyhow::Result<()> {
+fn run_replace(
+    dir: &Path,
+    name_pattern: Option<&str>,
+    file_type: Option<&str>,
+    old: &str,
+    new: &str,
+    preview: bool,
+) -> anyhow::Result<()> {
     let ext_filter = file_type.and_then(|t| ext_for_type(t));
     let pattern_lower = name_pattern.map(|p| p.to_lowercase());
     let mut changed_files = 0usize;
@@ -448,7 +543,9 @@ fn run_replace(dir: &Path, name_pattern: Option<&str>, file_type: Option<&str>, 
     for_each_file(dir, ext_filter, &mut |path| {
         if let Some(ref pat) = pattern_lower {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.to_lowercase().contains(pat) { return; }
+            if !name.to_lowercase().contains(pat) {
+                return;
+            }
         }
 
         let raw = match fs::read(path) {
@@ -459,7 +556,9 @@ fn run_replace(dir: &Path, name_pattern: Option<&str>, file_type: Option<&str>, 
         let content = to_utf8_lf(&raw, &sig);
 
         let new_content = content.replace(old, new);
-        if new_content == content { return; }
+        if new_content == content {
+            return;
+        }
 
         changed_files += 1;
         let count = content.matches(old).count();
@@ -484,9 +583,15 @@ fn run_replace(dir: &Path, name_pattern: Option<&str>, file_type: Option<&str>, 
     });
 
     if preview {
-        println!("\n  [preview] would change {} files, {} replacements", changed_files, total_replacements);
+        println!(
+            "\n  [preview] would change {} files, {} replacements",
+            changed_files, total_replacements
+        );
     } else {
-        println!("  changed {} files, {} replacements total", changed_files, total_replacements);
+        println!(
+            "  changed {} files, {} replacements total",
+            changed_files, total_replacements
+        );
     }
     Ok(())
 }

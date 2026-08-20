@@ -1,5 +1,5 @@
-use std::time::Instant;
 use std::process::Command;
+use std::time::Instant;
 
 /// 命令执行计时
 pub fn run(cmd: &str) -> anyhow::Result<()> {
@@ -22,9 +22,20 @@ pub fn run(cmd: &str) -> anyhow::Result<()> {
     let secs_remainder = secs % 60;
 
     if mins > 0 {
-        eprintln!("  time: {}m {}.{:03}s (exit: {})", mins, secs_remainder, millis, status.code().unwrap_or(-1));
+        eprintln!(
+            "  time: {}m {}.{:03}s (exit: {})",
+            mins,
+            secs_remainder,
+            millis,
+            status.code().unwrap_or(-1)
+        );
     } else {
-        eprintln!("  time: {}.{:03}s (exit: {})", secs, millis, status.code().unwrap_or(-1));
+        eprintln!(
+            "  time: {}.{:03}s (exit: {})",
+            secs,
+            millis,
+            status.code().unwrap_or(-1)
+        );
     }
 
     Ok(())

@@ -22,12 +22,14 @@ pub struct HttpOpts<'a> {
     pub links: bool,
     pub budget: Option<usize>,
     pub form: &'a [String],
+    pub no_probe: bool,
+    pub cookie_json: Option<&'a str>,
 }
 
 pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {
     anyhow::bail!(
         "本 rxt 二进制未启用 http 功能。\n\
          编译: cargo build --release --features http\n\
-         读浏览器 Cookie 另加 --features cookies（或 --features net）。"
+         读浏览器 Cookie：`--browser`（Python rookiepy 读磁盘，不打开窗口）或 `--cookie-json`。"
     )
 }

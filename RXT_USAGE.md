@@ -280,15 +280,31 @@ rxt http GET url --cookie "sid=abc; theme=dark"   # 额外 Cookie
 rxt http cookies --browser chrome                 # 按域统计
 rxt http cookies --browser chrome github.com      # 导出某域 Cookie（含值）
 rxt http cookies --browser firefox github.com -j --cookie-jar cookies.txt
-rxt http cli https://example.com                  # 把页面收成 rxt 命令（表单+链接，无 JS）
+rxt http cli https://example.com                  # 把页面收成 rxt 命令（表单+<a>，无 JS）
 rxt http forms https://example.com -j             # 只列 <form>
+rxt http scan https://pos.meituan.com             # SPA：抽 JS + 探测真接口
+rxt http session https://pos.meituan.com/api/v1/accounts/token  # 登录是否还有效（过期 exit 2）
+rxt http GET url --cookie-json cookies.json       # DevTools 导出的 Cookie JSON
+rxt http GET url --cookie-json '[{"name":"sid","value":"1","domain":"example.com"}]'
 rxt http POST https://example.com/login --form user=a --form pass=b --cookie-jar jar.txt
 rxt http --host huhu GET http://localhost:8650/sse  # 远程HTTP
 ```
 
-Chrome 127+ 的 App-Bound Encryption 可能需要**管理员**运行 rxt；失败就换 `--browser firefox` 或浏览器导出 Netscape 到 `--cookie-jar`。Cookie 是登录态，别写进笔记/星枢。
+日常自动化（工作机很卡、不想每次开浏览器）：
 
-`cli` / `forms` **不跑无头浏览器**：只解析服务端 HTML。SPA 请从浏览器 Network 抄 API，再用 `rxt http GET/POST`。
+1. 真浏览器**登录一次**（H5guard / 验证码只能在这里过）。
+2. Cookie-Editor（或 DevTools）导出 JSON → `%USERPROFILE%\.rxt\pos.json`（不要把值写进笔记/星枢）。
+3. `setx RXT_COOKIE_JSON %USERPROFILE%\.rxt\pos.json`，新开终端后：
+   - `rxt http session https://pos.meituan.com/api/v1/accounts/token`
+   - `rxt http scan https://pos.meituan.com`
+   - 或 `rxt recipe run pos`
+4. Cookie 过期（`session` exit 2 / `code 14101`）再打开浏览器登录一次，覆盖 JSON。
+
+环境变量回退：`RXT_COOKIE_JSON`、`RXT_COOKIE_JAR`、`RXT_BROWSER`（命令行参数优先）。
+
+Chrome 127+ 的 App-Bound Encryption **读不了**本机 Cookie 库（不是管理员能解的）；不要用 `--browser chrome`。Firefox 若能解密可用 `--browser firefox`，否则只用导出的 JSON / Netscape 罐。
+
+`cli` / `forms` / `scan` / `session` **不跑无头浏览器**：服务端 HTML + 静态 JS 抽接口，`scan` 会探测哪个 host 返回 JSON。不破解 H5guard / 验证码。`scan --no-probe` 只抽不打。
 
 #### tail 详解
 

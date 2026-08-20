@@ -35,19 +35,28 @@ pub fn run(message: &str, title: Option<&str>, level: &str) -> anyhow::Result<()
              $balloon.BalloonTipText = '{}'; \
              $balloon.Visible = $true; \
              $balloon.ShowBalloonTip(5000)",
-            title.replace('\'', "''"), message.replace('\'', "''")
+            title.replace('\'', "''"),
+            message.replace('\'', "''")
         );
-        let _ = Command::new("powershell").args(["-NoProfile", "-Command", &ps])
-            .spawn().map(|_| ());
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .spawn()
+            .map(|_| ());
         // 兜底: msg.exe(通知级别低但肯定有)
         // 不报错,因为通知失败不应中断主流程
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let urgency = match level { "error"|"err" => "critical", "warn"|"warning" => "normal", _ => "low" };
+        let urgency = match level {
+            "error" | "err" => "critical",
+            "warn" | "warning" => "normal",
+            _ => "low",
+        };
         if which("notify-send") {
-            let _ = Command::new("notify-send").args(["-u", urgency, "-a", "rxt", title, message]).spawn();
+            let _ = Command::new("notify-send")
+                .args(["-u", urgency, "-a", "rxt", title, message])
+                .spawn();
         } else {
             // 兜底: 写到终端 bell
             eprint!("\x07");
@@ -56,8 +65,11 @@ pub fn run(message: &str, title: Option<&str>, level: &str) -> anyhow::Result<()
 
     #[cfg(target_os = "macos")]
     {
-        let script = format!("display notification \"{}\" with title \"{}\"",
-            message.replace('"', "\\\""), title.replace('"', "\\\""));
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            message.replace('"', "\\\""),
+            title.replace('"', "\\\"")
+        );
         let _ = Command::new("osascript").args(["-e", &script]).spawn();
     }
 
@@ -66,7 +78,11 @@ pub fn run(message: &str, title: Option<&str>, level: &str) -> anyhow::Result<()
 }
 
 fn which(cmd: &str) -> bool {
-    Command::new(if cfg!(windows) {"where"} else {"which"}).arg(cmd)
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
+    Command::new(if cfg!(windows) { "where" } else { "which" })
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }

@@ -9,10 +9,10 @@ use std::path::Path;
 /// 一个解析出的代码符号
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Symbol {
-    pub kind: String,    // "fn" / "def" / "function" / "struct" / "class" ...
-    pub name: String,    // 符号名
+    pub kind: String,      // "fn" / "def" / "function" / "struct" / "class" ...
+    pub name: String,      // 符号名
     pub signature: String, // 签名(到 { 或 ; 为止, 截断 100 字符)
-    pub line: usize,     // 1-indexed 行号
+    pub line: usize,       // 1-indexed 行号
 }
 
 /// 语言解析器 trait — 每种语言一个实现
@@ -38,12 +38,15 @@ pub fn parser_for(path: &Path) -> Option<Box<dyn LanguageParser>> {
 pub fn extract_symbols(path: &Path, content: &str) -> Option<Vec<Symbol>> {
     // 统一走 langparse(全 9 语言, 更准确), 保留 Symbol 类型兼容
     crate::langparse::detect_lang(path).map(|lang| {
-        crate::langparse::parse(content, lang).into_iter().map(|c| Symbol {
-            kind: c.kind,
-            name: c.name,
-            signature: c.signature,
-            line: c.line,
-        }).collect()
+        crate::langparse::parse(content, lang)
+            .into_iter()
+            .map(|c| Symbol {
+                kind: c.kind,
+                name: c.name,
+                signature: c.signature,
+                line: c.line,
+            })
+            .collect()
     })
 }
 
@@ -57,7 +60,9 @@ pub fn is_supported(path: &Path) -> bool {
 pub struct RustParser;
 
 impl LanguageParser for RustParser {
-    fn extensions(&self) -> &[&str] { &["rs"] }
+    fn extensions(&self) -> &[&str] {
+        &["rs"]
+    }
     fn parse(&self, content: &str) -> Vec<Symbol> {
         parse_generic(content, &rust_keywords(), CommentStyle::Slash)
     }
@@ -65,8 +70,14 @@ impl LanguageParser for RustParser {
 
 fn rust_keywords() -> Vec<Keyword> {
     vec![
-        kw("fn"), kw("struct"), kw("enum"), kw("impl"),
-        kw("trait"), kw("mod"), kw("type"), kw("const"),
+        kw("fn"),
+        kw("struct"),
+        kw("enum"),
+        kw("impl"),
+        kw("trait"),
+        kw("mod"),
+        kw("type"),
+        kw("const"),
         kw("static"),
     ]
 }
@@ -76,7 +87,9 @@ fn rust_keywords() -> Vec<Keyword> {
 pub struct PythonParser;
 
 impl LanguageParser for PythonParser {
-    fn extensions(&self) -> &[&str] { &["py"] }
+    fn extensions(&self) -> &[&str] {
+        &["py"]
+    }
     fn parse(&self, content: &str) -> Vec<Symbol> {
         parse_python(content)
     }
@@ -88,16 +101,21 @@ fn parse_python(content: &str) -> Vec<Symbol> {
         let t = raw.trim_start();
         let indent = raw.len() - t.len();
         // 跳过注释和空行; 只认顶层(class 内方法用 self, 不算独立符号)
-        if t.starts_with('#') || t.is_empty() { continue; }
+        if t.starts_with('#') || t.is_empty() {
+            continue;
+        }
         let line_num = idx + 1;
         // async def / def
         let def_line = if t.starts_with("async def ") {
             Some(("def", "async def "))
         } else if t.starts_with("def ") {
             Some(("def", "def "))
-        } else { None };
+        } else {
+            None
+        };
         if let Some((kind, prefix)) = def_line {
-            if indent == 0 {  // 只收顶层函数
+            if indent == 0 {
+                // 只收顶层函数
                 if let Some(name) = ident_after(t, prefix) {
                     symbols.push(Symbol {
                         kind: kind.into(),
@@ -126,16 +144,25 @@ fn parse_python(content: &str) -> Vec<Symbol> {
 
 // ============================== JS / TS ==============================
 
-pub struct JsParser { typescript: bool }
+pub struct JsParser {
+    typescript: bool,
+}
 
 impl LanguageParser for JsParser {
     fn extensions(&self) -> &[&str] {
-        if self.typescript { &["ts","tsx"] } else { &["js","jsx","mjs","cjs"] }
+        if self.typescript {
+            &["ts", "tsx"]
+        } else {
+            &["js", "jsx", "mjs", "cjs"]
+        }
     }
     fn parse(&self, content: &str) -> Vec<Symbol> {
         let mut kws: Vec<Keyword> = vec![
-            kw("function"), kw("class"),
-            kw("const"), kw("let"), kw("var"),
+            kw("function"),
+            kw("class"),
+            kw("const"),
+            kw("let"),
+            kw("var"),
         ];
         if self.typescript {
             kws.push(kw("interface"));
@@ -151,7 +178,9 @@ impl LanguageParser for JsParser {
 pub struct GoParser;
 
 impl LanguageParser for GoParser {
-    fn extensions(&self) -> &[&str] { &["go"] }
+    fn extensions(&self) -> &[&str] {
+        &["go"]
+    }
     fn parse(&self, content: &str) -> Vec<Symbol> {
         parse_generic(content, &go_keywords(), CommentStyle::Slash)
     }
@@ -167,11 +196,13 @@ struct Keyword {
     word: &'static str,
 }
 
-fn kw(word: &'static str) -> Keyword { Keyword { word } }
+fn kw(word: &'static str) -> Keyword {
+    Keyword { word }
+}
 
 #[derive(Clone, Copy)]
 enum CommentStyle {
-    Slash,  // // 行注释, /* */ 块注释 (Rust/JS/Go 通用)
+    Slash, // // 行注释, /* */ 块注释 (Rust/JS/Go 通用)
 }
 
 /// 通用行首前缀解析器 — 复用 struct.rs 验证过的逻辑
@@ -181,13 +212,19 @@ fn parse_generic(content: &str, keywords: &[Keyword], _comment: CommentStyle) ->
     for (idx, raw) in content.lines().enumerate() {
         let t = raw.trim();
         // 注释跳过
-        if t.starts_with("//") { continue; }
+        if t.starts_with("//") {
+            continue;
+        }
         if t.starts_with("/*") {
-            if !t.contains("*/") { in_block = true; }
+            if !t.contains("*/") {
+                in_block = true;
+            }
             continue;
         }
         if in_block {
-            if t.contains("*/") { in_block = false; }
+            if t.contains("*/") {
+                in_block = false;
+            }
             continue;
         }
         let line_num = idx + 1;
@@ -199,7 +236,7 @@ fn parse_generic(content: &str, keywords: &[Keyword], _comment: CommentStyle) ->
             let bare = format!("{} ", kw_word);
             if let Some(sym) = try_match(t, kw_word, &[&with_pub, &bare], line_num) {
                 symbols.push(sym);
-                break;  // 一行只算一个符号
+                break; // 一行只算一个符号
             }
         }
     }
@@ -212,13 +249,19 @@ fn try_match(line: &str, kw_word: &str, prefixes: &[&str], line_num: usize) -> O
         if let Some(rest) = line.strip_prefix(prefix) {
             let rest = rest.trim_start();
             let name = first_ident(rest);
-            if name.is_empty() { return None; }
+            if name.is_empty() {
+                return None;
+            }
             // 签名: 从关键字开始, 到 { 或 ; 为止, 截断 100
             let kw_idx = line.find(kw_word)?;
             let from_kw = &line[kw_idx..];
-            let end = from_kw.find(|c: char| c == '{' || c == ';').unwrap_or(from_kw.len().min(100));
+            let end = from_kw
+                .find(|c: char| c == '{' || c == ';')
+                .unwrap_or(from_kw.len().min(100));
             let sig = from_kw[..end].trim().to_string();
-            if sig.len() <= kw_word.len() + 1 { return None; }
+            if sig.len() <= kw_word.len() + 1 {
+                return None;
+            }
             return Some(Symbol {
                 kind: kw_word.to_string(),
                 name,
@@ -247,7 +290,11 @@ fn first_ident(s: &str) -> String {
 fn ident_after(line: &str, prefix: &str) -> Option<String> {
     let rest = line.strip_prefix(prefix)?.trim_start();
     let name = first_ident(rest);
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// 截取签名到指定终止符(Python 用 : 作为签名结束)

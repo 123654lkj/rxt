@@ -1,8 +1,8 @@
 //! 远程主机配置管理
 
-use std::path::PathBuf;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -12,7 +12,9 @@ pub enum RemoteOs {
 }
 
 impl Default for RemoteOs {
-    fn default() -> Self { RemoteOs::Linux }
+    fn default() -> Self {
+        RemoteOs::Linux
+    }
 }
 
 impl std::fmt::Display for RemoteOs {
@@ -37,12 +39,14 @@ pub struct HostConfig {
     #[serde(default)]
     pub password_env: Option<String>,
     #[serde(default)]
-    pub os: Option<RemoteOs>,  // 可选，避免每次检测
+    pub os: Option<RemoteOs>, // 可选，避免每次检测
     #[serde(default)]
-    pub jump_host: Option<String>,  // v0.7.3: 跳板机 host alias (先 SSH 到此机, 再 direct-tcpip 到目标)
+    pub jump_host: Option<String>, // v0.7.3: 跳板机 host alias (先 SSH 到此机, 再 direct-tcpip 到目标)
 }
 
-fn default_port() -> u16 { 22 }
+fn default_port() -> u16 {
+    22
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GroupConfig {
@@ -133,7 +137,8 @@ impl HostsFile {
     }
 
     pub fn get_host(&self, name: &str) -> anyhow::Result<&HostConfig> {
-        let config_path = Self::config_path().unwrap_or_else(|_| PathBuf::from("~/.rxt/hosts.toml"));
+        let config_path =
+            Self::config_path().unwrap_or_else(|_| PathBuf::from("~/.rxt/hosts.toml"));
         match self.hosts.get(name) {
             Some(h) => Ok(h),
             None => {
@@ -141,7 +146,9 @@ impl HostsFile {
                 let existing_str = existing.join(", ");
                 let msg = format!(
                     "Host not found: {}. Config file: {}. Existing hosts: {}",
-                    name, config_path.display(), existing_str
+                    name,
+                    config_path.display(),
+                    existing_str
                 );
                 Err(anyhow::anyhow!(msg))
             }
@@ -182,14 +189,16 @@ impl HostsFile {
                 }
                 Err(_) => {
                     // env 未设置：若有明文则回退并警告；若无则下面处理
-                    if host.password.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
+                    if host
+                        .password
+                        .as_ref()
+                        .map(|p| !p.is_empty())
+                        .unwrap_or(false)
+                    {
                         Self::warn_plaintext_once();
                         return host.password.clone();
                     }
-                    eprintln!(
-                        "rxt: password_env={} 未设置且无明文 password",
-                        env_var
-                    );
+                    eprintln!("rxt: password_env={} 未设置且无明文 password", env_var);
                     return None;
                 }
             }
@@ -218,8 +227,16 @@ impl HostsFile {
     /// 认证方式摘要（**永不返回密码本身**），供 `rxt info` 脱敏展示。
     pub fn auth_summary(host: &HostConfig) -> &'static str {
         let has_key = host.key.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
-        let has_env = host.password_env.as_ref().map(|e| !e.is_empty()).unwrap_or(false);
-        let has_plain = host.password.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
+        let has_env = host
+            .password_env
+            .as_ref()
+            .map(|e| !e.is_empty())
+            .unwrap_or(false);
+        let has_plain = host
+            .password
+            .as_ref()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false);
         match (has_key, has_env, has_plain) {
             (true, _, _) => "key",
             (false, true, true) => "password_env(+plaintext_fallback)",

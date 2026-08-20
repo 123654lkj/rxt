@@ -1,4 +1,4 @@
-﻿// rxt sort — 行排序
+// rxt sort — 行排序
 use std::io::{self, BufRead, Write};
 
 pub fn run(
@@ -23,20 +23,32 @@ pub fn run(
 
     let mut data: Vec<(Vec<&str>, &str)> = if column.is_some() {
         let sep_char = sep.as_deref().unwrap_or("\t");
-        lines.iter().map(|l| {
-            let parts: Vec<&str> = l.split(sep_char).collect();
-            (parts, l.as_str())
-        }).collect()
+        lines
+            .iter()
+            .map(|l| {
+                let parts: Vec<&str> = l.split(sep_char).collect();
+                (parts, l.as_str())
+            })
+            .collect()
     } else {
-        lines.iter().map(|l| (vec![l.as_str()], l.as_str())).collect()
+        lines
+            .iter()
+            .map(|l| (vec![l.as_str()], l.as_str()))
+            .collect()
     };
 
     let col_idx = column.unwrap_or(1).saturating_sub(1);
 
     if numeric {
         data.sort_by(|a, b| {
-            let av = a.0.get(col_idx).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
-            let bv = b.0.get(col_idx).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
+            let av =
+                a.0.get(col_idx)
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+            let bv =
+                b.0.get(col_idx)
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .unwrap_or(0.0);
             av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal)
         });
     } else {

@@ -11,11 +11,11 @@
 
 #[cfg(feature = "remote")]
 mod imp {
+    use anyhow::Context;
+    use russh::keys::*;
+    use russh::{client, ChannelMsg};
     use std::path::Path;
     use std::sync::Arc;
-    use anyhow::Context;
-    use russh::{client, ChannelMsg};
-    use russh::keys::*;
 
     use crate::hosts::{HostConfig, HostsFile, RemoteOs};
     use crate::signature::FileSignature;
@@ -60,8 +60,8 @@ mod imp {
         host_name: String,
         host_config: HostConfig,
         os: RemoteOs,
-        has_rxt: Option<bool>,      // v0.7.5: None=未探测, Some(true)=远端有rxt, Some(false)=无
-        rxt_path: Option<String>,   // v0.7.5: 远端 rxt 可执行文件完整路径 (探测到后缓存)
+        has_rxt: Option<bool>, // v0.7.5: None=未探测, Some(true)=远端有rxt, Some(false)=无
+        rxt_path: Option<String>, // v0.7.5: 远端 rxt 可执行文件完整路径 (探测到后缓存)
     }
 
     impl RemoteChannel {
@@ -77,11 +77,17 @@ mod imp {
             let handle = rt.block_on(Self::connect_async(&config))?;
 
             let mut ch = Self {
-                rt, handle, host_name: host_alias.to_string(),
-                host_config: config.clone(), os: RemoteOs::Linux,
-                has_rxt: None, rxt_path: None,   // v0.7.5: 懒探测, 首次 try_exec_rxt 时才查
+                rt,
+                handle,
+                host_name: host_alias.to_string(),
+                host_config: config.clone(),
+                os: RemoteOs::Linux,
+                has_rxt: None,
+                rxt_path: None, // v0.7.5: 懒探测, 首次 try_exec_rxt 时才查
             };
-            ch.os = config.os.unwrap_or_else(|| ch.detect_os().unwrap_or(RemoteOs::Linux));
+            ch.os = config
+                .os
+                .unwrap_or_else(|| ch.detect_os().unwrap_or(RemoteOs::Linux));
             Ok(ch)
         }
 
@@ -98,9 +104,13 @@ mod imp {
                     .with_context(|| format!("load key {}", key_path))?;
                 // russh 0.61: authenticate_publickey 要 PrivateKeyWithHashAlg
                 let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
-                handle.authenticate_publickey(&config.user, key_with_alg).await?
+                handle
+                    .authenticate_publickey(&config.user, key_with_alg)
+                    .await?
             } else if let Some(password) = hosts.get_password(config) {
-                handle.authenticate_password(&config.user, &password).await?
+                handle
+                    .authenticate_password(&config.user, &password)
+                    .await?
             } else {
                 anyhow::bail!("No auth method (no key/password for {})", config.user);
             };
@@ -111,40 +121,50 @@ mod imp {
             Ok(())
         }
 
-        async fn connect_async(config: &HostConfig) -> anyhow::Result<client::Handle<ClientHandler>> {
+        async fn connect_async(
+            config: &HostConfig,
+        ) -> anyhow::Result<client::Handle<ClientHandler>> {
             let ssh_config = Arc::new(client::Config::default());
             let hosts = HostsFile::load()?;
 
             // v0.7.3: 跳板机模式 — 先 SSH 到 jump_host, 再 direct-tcpip 隧道到目标机
             if let Some(jump_alias) = &config.jump_host {
                 // 1. 连接并认证跳板机
-                let jump_config = hosts.get_host(jump_alias)
+                let jump_config = hosts
+                    .get_host(jump_alias)
                     .with_context(|| format!("jump_host {} not found in hosts.toml", jump_alias))?
                     .clone();
                 let jump_addr = format!("{}:{}", jump_config.host, jump_config.port);
-                let mut jump_handle = client::connect(ssh_config.clone(), &jump_addr, ClientHandler)
+                let mut jump_handle =
+                    client::connect(ssh_config.clone(), &jump_addr, ClientHandler)
+                        .await
+                        .with_context(|| format!("jump host SSH connect failed: {}", jump_addr))?;
+                Self::authenticate(&mut jump_handle, &jump_config, &hosts)
                     .await
-                    .with_context(|| format!("jump host SSH connect failed: {}", jump_addr))?;
-                Self::authenticate(&mut jump_handle, &jump_config, &hosts).await
                     .context("jump host authentication failed")?;
 
                 // 2. 通过跳板机开 direct-tcpip 隧道到目标机
                 let channel = jump_handle
-                    .channel_open_direct_tcpip(
-                        &config.host, config.port as u32,
-                        "127.0.0.1", 0,
-                    )
+                    .channel_open_direct_tcpip(&config.host, config.port as u32, "127.0.0.1", 0)
                     .await
-                    .with_context(|| format!("direct-tcpip to {}:{} via {} failed",
-                        config.host, config.port, jump_alias))?;
+                    .with_context(|| {
+                        format!(
+                            "direct-tcpip to {}:{} via {} failed",
+                            config.host, config.port, jump_alias
+                        )
+                    })?;
                 // Channel → ChannelStream (impl AsyncRead+AsyncWrite+Unpin+Send)
                 let stream = channel.into_stream();
 
                 // 3. 在隧道上建第二层 SSH 连接 + 认证目标机
                 let mut handle = client::connect_stream(ssh_config, stream, ClientHandler)
                     .await
-                    .with_context(|| format!("target SSH over tunnel failed: {}@{}:{}",
-                        config.user, config.host, config.port))?;
+                    .with_context(|| {
+                        format!(
+                            "target SSH over tunnel failed: {}@{}:{}",
+                            config.user, config.host, config.port
+                        )
+                    })?;
                 Self::authenticate(&mut handle, config, &hosts).await?;
                 return Ok(handle);
             }
@@ -163,11 +183,15 @@ mod imp {
         fn detect_os(&self) -> anyhow::Result<RemoteOs> {
             // 先试 Linux: uname -s 返回 "Linux"
             if let Ok(out) = self.exec("uname -s 2>/dev/null") {
-                if out.to_lowercase().contains("linux") { return Ok(RemoteOs::Linux); }
+                if out.to_lowercase().contains("linux") {
+                    return Ok(RemoteOs::Linux);
+                }
             }
             // 再试 Windows: 执行简单命令，Windows 的 cmd/PowerShell 都能 echo
             if let Ok(out) = self.exec("echo WIN") {
-                if out.trim() == "WIN" { return Ok(RemoteOs::Windows); }
+                if out.trim() == "WIN" {
+                    return Ok(RemoteOs::Windows);
+                }
             }
             Ok(RemoteOs::Linux)
         }
@@ -226,7 +250,9 @@ mod imp {
                 let mut stderr = String::new();
                 let mut exit_code = 0i32;
                 loop {
-                    let Some(msg) = channel.wait().await else { break; };
+                    let Some(msg) = channel.wait().await else {
+                        break;
+                    };
                     match msg {
                         ChannelMsg::Data { ref data } => {
                             stdout.push_str(&self.decode_remote(data));
@@ -252,19 +278,29 @@ mod imp {
                     let p = shell_path_win(path);
                     let cmd = format!("pwsh -NoProfile -Command \"[Convert]::ToBase64String([IO.File]::ReadAllBytes({}))\"", p);
                     let (stdout, stderr, exit) = self.exec_sep(&cmd)?;
-                    if exit != 0 { anyhow::bail!("read_file (win) exit {}: {}", exit, stderr.trim()); }
+                    if exit != 0 {
+                        anyhow::bail!("read_file (win) exit {}: {}", exit, stderr.trim());
+                    }
                     let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
-                    base64::engine::general_purpose::STANDARD.decode(&cleaned)
-                        .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len()))
+                    base64::engine::general_purpose::STANDARD
+                        .decode(&cleaned)
+                        .map_err(|e| {
+                            anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len())
+                        })
                 }
                 _ => {
                     let p = shell_path(path);
                     let cmd = format!("cat {} | base64", p);
                     let (stdout, stderr, exit) = self.exec_sep(&cmd)?;
-                    if exit != 0 { anyhow::bail!("read_file exit {}: {}", exit, stderr.trim()); }
+                    if exit != 0 {
+                        anyhow::bail!("read_file exit {}: {}", exit, stderr.trim());
+                    }
                     let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
-                    base64::engine::general_purpose::STANDARD.decode(&cleaned)
-                        .map_err(|e| anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len()))
+                    base64::engine::general_purpose::STANDARD
+                        .decode(&cleaned)
+                        .map_err(|e| {
+                            anyhow::anyhow!("base64 decode failed: {} (len={})", e, cleaned.len())
+                        })
                 }
             }
         }
@@ -280,7 +316,12 @@ mod imp {
             self.write_file_with_mode(path, content, 0o644)
         }
 
-        pub fn write_file_with_mode(&self, path: &Path, content: &[u8], mode: i32) -> anyhow::Result<()> {
+        pub fn write_file_with_mode(
+            &self,
+            path: &Path,
+            content: &[u8],
+            mode: i32,
+        ) -> anyhow::Result<()> {
             use base64::Engine;
             let b64 = base64::engine::general_purpose::STANDARD.encode(content);
             if b64.len() > 1_000_000 {
@@ -302,16 +343,22 @@ mod imp {
                         parent, p, b64
                     );
                     let (_out, err, exit) = self.exec_sep(&cmd)?;
-                    if exit != 0 { anyhow::bail!("write_file (win) exit {}: {}", exit, err.trim()); }
+                    if exit != 0 {
+                        anyhow::bail!("write_file (win) exit {}: {}", exit, err.trim());
+                    }
                     Ok(())
                 }
                 _ => {
                     let p = shell_path(path);
                     let parent = shell_path(path.parent().unwrap_or(Path::new(".")));
-                    let cmd = format!("mkdir -p {} && printf '%s' '{}' | base64 -d > {} && chmod {:o} {}",
-                        parent, b64, p, mode, p);
+                    let cmd = format!(
+                        "mkdir -p {} && printf '%s' '{}' | base64 -d > {} && chmod {:o} {}",
+                        parent, b64, p, mode, p
+                    );
                     let (_out, err, exit) = self.exec_sep(&cmd)?;
-                    if exit != 0 { anyhow::bail!("write_file exit {}: {}", exit, err.trim()); }
+                    if exit != 0 {
+                        anyhow::bail!("write_file exit {}: {}", exit, err.trim());
+                    }
                     Ok(())
                 }
             }
@@ -329,15 +376,23 @@ mod imp {
             }
             // 解码写入目标 + 清理
             let p = shell_path(path);
-            let cmd = format!("base64 -d {} > {} && chmod {:o} {} && rm -f {}",
-                tmp, p, mode, p, tmp);
+            let cmd = format!(
+                "base64 -d {} > {} && chmod {:o} {} && rm -f {}",
+                tmp, p, mode, p, tmp
+            );
             self.exec(&cmd)?;
             Ok(())
         }
 
-        pub fn host_name(&self) -> &str { &self.host_name }
-        pub fn host_config(&self) -> &HostConfig { &self.host_config }
-        pub fn remote_os(&self) -> RemoteOs { self.os }
+        pub fn host_name(&self) -> &str {
+            &self.host_name
+        }
+        pub fn host_config(&self) -> &HostConfig {
+            &self.host_config
+        }
+        pub fn remote_os(&self) -> RemoteOs {
+            self.os
+        }
 
         /// POSIX 单引号转义，避免 *.md / 中文路径被远端 shell 拆开
         fn shell_quote(s: &str) -> String {
@@ -350,7 +405,9 @@ mod imp {
         }
 
         /// v0.7.5: 远端是否已装 rxt (探测结果已缓存)
-        pub fn has_rxt(&self) -> Option<bool> { self.has_rxt }
+        pub fn has_rxt(&self) -> Option<bool> {
+            self.has_rxt
+        }
 
         /// v0.7.5: 跨平台探测远端 rxt 可执行文件路径。
         /// Linux: command -v rxt; Windows: Get-Command rxt → %USERPROFILE%\rxt.exe → C:\rxt\rxt.exe
@@ -365,17 +422,29 @@ mod imp {
                               if (-not $r) { $r = Get-Item \"C:\\rxt\\rxt.exe\" -ErrorAction SilentlyContinue }; \
                               if ($r) { $r.FullName } else { '' }";
                     let b64 = base64::engine::general_purpose::STANDARD.encode(
-                        ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
+                        ps.encode_utf16()
+                            .flat_map(|c| c.to_le_bytes())
+                            .collect::<Vec<u8>>(),
                     );
-                    let out = self.exec(&format!("pwsh -NoProfile -EncodedCommand {}", b64)).unwrap_or_default();
+                    let out = self
+                        .exec(&format!("pwsh -NoProfile -EncodedCommand {}", b64))
+                        .unwrap_or_default();
                     let trimmed = out.trim();
-                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
                 }
                 RemoteOs::Linux => {
                     // command -v 比 which 更通用 (POSIX 内建); 输出 rxt 完整路径
                     let out = self.exec("command -v rxt 2>/dev/null").unwrap_or_default();
                     let trimmed = out.trim();
-                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
                 }
             };
             self.rxt_path = path.clone();
@@ -388,18 +457,20 @@ mod imp {
         /// "半路装上"场景: 重连即重新探测 (新实例 has_rxt 重置 None)。
         pub fn try_exec_rxt(&mut self, args: &[&str]) -> Option<String> {
             match self.has_rxt {
-                Some(false) => None,                    // 已知无 rxt, 直接降级
-                Some(true) => {                         // 已知有, 用缓存路径直接调
+                Some(false) => None, // 已知无 rxt, 直接降级
+                Some(true) => {
+                    // 已知有, 用缓存路径直接调
                     let exe = self.rxt_path.as_deref().unwrap_or("rxt");
                     let q: Vec<String> = args.iter().map(|a| Self::shell_quote(a)).collect();
                     self.exec(&format!("{} {}", exe, q.join(" "))).ok()
                 }
-                None => {                               // 未知, 首次探测
+                None => {
+                    // 未知, 首次探测
                     if let Some(ref p) = self.probe_rxt_path() {
                         let q: Vec<String> = args.iter().map(|a| Self::shell_quote(a)).collect();
                         self.exec(&format!("{} {}", p, q.join(" "))).ok()
                     } else {
-                        None    // 探测确认无 rxt (has_rxt 已被 probe_rxt_path 设为 Some(false))
+                        None // 探测确认无 rxt (has_rxt 已被 probe_rxt_path 设为 Some(false))
                     }
                 }
             }
@@ -423,7 +494,9 @@ pub use imp::RemoteChannel;
 mod stub {
     use std::path::Path;
 
-    pub struct RemoteChannel { _private: () }
+    pub struct RemoteChannel {
+        _private: (),
+    }
 
     impl RemoteChannel {
         pub fn connect(_host_alias: &str) -> anyhow::Result<Self> {
@@ -433,19 +506,53 @@ mod stub {
                  本地版仅支持本地文件操作。"
             );
         }
-        pub fn read_file(&self, _path: &Path) -> anyhow::Result<Vec<u8>> { unreachable!() }
-        pub fn read_file_utf8(&self, _path: &Path) -> anyhow::Result<(String, crate::signature::FileSignature)> { unreachable!() }
-        pub fn write_file(&self, _path: &Path, _content: &[u8]) -> anyhow::Result<()> { unreachable!() }
-        pub fn write_file_with_mode(&self, _path: &Path, _content: &[u8], _mode: i32) -> anyhow::Result<()> { unreachable!() }
-        pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> { unreachable!() }
-        pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> { unreachable!() }
-        pub fn check_rxt(&mut self) -> anyhow::Result<bool> { unreachable!() }
-        pub fn has_rxt(&self) -> Option<bool> { unreachable!() }
-        pub fn try_exec_rxt(&mut self, _args: &[&str]) -> Option<String> { unreachable!() }
-        pub fn probe_rxt_path(&mut self) -> Option<String> { unreachable!() }
-        pub fn host_name(&self) -> &str { unreachable!() }
-        pub fn host_config(&self) -> &crate::hosts::HostConfig { unreachable!() }
-        pub fn remote_os(&self) -> crate::hosts::RemoteOs { unreachable!() }
+        pub fn read_file(&self, _path: &Path) -> anyhow::Result<Vec<u8>> {
+            unreachable!()
+        }
+        pub fn read_file_utf8(
+            &self,
+            _path: &Path,
+        ) -> anyhow::Result<(String, crate::signature::FileSignature)> {
+            unreachable!()
+        }
+        pub fn write_file(&self, _path: &Path, _content: &[u8]) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        pub fn write_file_with_mode(
+            &self,
+            _path: &Path,
+            _content: &[u8],
+            _mode: i32,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> {
+            unreachable!()
+        }
+        pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> {
+            unreachable!()
+        }
+        pub fn check_rxt(&mut self) -> anyhow::Result<bool> {
+            unreachable!()
+        }
+        pub fn has_rxt(&self) -> Option<bool> {
+            unreachable!()
+        }
+        pub fn try_exec_rxt(&mut self, _args: &[&str]) -> Option<String> {
+            unreachable!()
+        }
+        pub fn probe_rxt_path(&mut self) -> Option<String> {
+            unreachable!()
+        }
+        pub fn host_name(&self) -> &str {
+            unreachable!()
+        }
+        pub fn host_config(&self) -> &crate::hosts::HostConfig {
+            unreachable!()
+        }
+        pub fn remote_os(&self) -> crate::hosts::RemoteOs {
+            unreachable!()
+        }
     }
 }
 

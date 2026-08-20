@@ -1,11 +1,11 @@
 //! 结构化文件编辑 — 格式保持版
 //! 支持 JSON 脚本多步变换 + 行模式编辑
 
-use std::path::Path;
-use std::fs;
 use serde::Deserialize;
+use std::fs;
+use std::path::Path;
 
-use crate::signature::{FileSignature, to_utf8_lf, apply_format};
+use crate::signature::{apply_format, to_utf8_lf, FileSignature};
 use regex::Regex;
 
 #[derive(Debug, Deserialize)]
@@ -19,18 +19,27 @@ struct ScriptOp {
 }
 
 /// 从 JSON 脚本文件执行多步变换
-pub fn run_script(path: &Path, script_path: &Path, preview: bool, remote: Option<&crate::remote::RemoteChannel>) -> anyhow::Result<()> {
+pub fn run_script(
+    path: &Path,
+    script_path: &Path,
+    preview: bool,
+    remote: Option<&crate::remote::RemoteChannel>,
+) -> anyhow::Result<()> {
     // 读取原始文件指纹
     let storage = crate::storage::Storage::from_remote(remote);
     let raw = storage.read_file(path)?;
     let sig = FileSignature::detect(&raw);
-    
+
     // 转为内部 UTF-8 + LF
     let mut file_content = to_utf8_lf(&raw, &sig);
 
     // 读取脚本
     let script_raw = fs::read(script_path)?;
-    let script_text = if script_raw.len() >= 3 && script_raw[0] == 0xEF && script_raw[1] == 0xBB && script_raw[2] == 0xBF {
+    let script_text = if script_raw.len() >= 3
+        && script_raw[0] == 0xEF
+        && script_raw[1] == 0xBB
+        && script_raw[2] == 0xBF
+    {
         String::from_utf8_lossy(&script_raw[3..]).to_string()
     } else {
         String::from_utf8_lossy(&script_raw).to_string()
@@ -108,8 +117,13 @@ pub fn run_script(path: &Path, script_path: &Path, preview: bool, remote: Option
             // 应用原始格式写回
             let formatted = apply_format(&file_content, &sig);
             storage.write_file(path, formatted.as_bytes())?;
-            println!("  Updated {} ({} script ops, preserved: {} {})", 
-                     path.display(), ops.len(), sig.encoding, sig.line_ending);
+            println!(
+                "  Updated {} ({} script ops, preserved: {} {})",
+                path.display(),
+                ops.len(),
+                sig.encoding,
+                sig.line_ending
+            );
         }
     } else {
         eprintln!("  (no changes made)");
@@ -132,21 +146,39 @@ pub fn run(
     let re_after = match (use_regex, after) {
         (true, Some(a)) => match Regex::new(a) {
             Ok(r) => Some(r),
-            Err(e) => { eprintln!("Warning: invalid regex in --after: {}. Falling back to literal.", e); None },
+            Err(e) => {
+                eprintln!(
+                    "Warning: invalid regex in --after: {}. Falling back to literal.",
+                    e
+                );
+                None
+            }
         },
         _ => None,
     };
     let re_before = match (use_regex, before) {
         (true, Some(b)) => match Regex::new(b) {
             Ok(r) => Some(r),
-            Err(e) => { eprintln!("Warning: invalid regex in --before: {}. Falling back to literal.", e); None },
+            Err(e) => {
+                eprintln!(
+                    "Warning: invalid regex in --before: {}. Falling back to literal.",
+                    e
+                );
+                None
+            }
         },
         _ => None,
     };
     let re_delete = match (use_regex, delete) {
         (true, Some(d)) => match Regex::new(d) {
             Ok(r) => Some(r),
-            Err(e) => { eprintln!("Warning: invalid regex in --delete: {}. Falling back to literal.", e); None },
+            Err(e) => {
+                eprintln!(
+                    "Warning: invalid regex in --delete: {}. Falling back to literal.",
+                    e
+                );
+                None
+            }
         },
         _ => None,
     };
@@ -154,7 +186,7 @@ pub fn run(
     let storage = crate::storage::Storage::from_remote(remote);
     let raw = storage.read_file(path)?;
     let sig = FileSignature::detect(&raw);
-    
+
     // 转为内部 UTF-8 + LF
     let file_content = to_utf8_lf(&raw, &sig);
     let lines: Vec<&str> = file_content.lines().collect();
@@ -166,14 +198,28 @@ pub fn run(
     for &line in &lines {
         // Delete mode
         if let Some(pat) = delete {
-            let m = if let Some(ref re) = re_delete { re.is_match(line) } else { line.contains(pat) };
-            if m { changed = true; continue; }
+            let m = if let Some(ref re) = re_delete {
+                re.is_match(line)
+            } else {
+                line.contains(pat)
+            };
+            if m {
+                changed = true;
+                continue;
+            }
         }
 
         // Insert before mode
         if let Some(pat) = before {
-            let m = if let Some(ref re) = re_before { re.is_match(line) } else { line.contains(pat) };
-            if m && !insert_text.is_empty() { result.push(insert_text.clone()); changed = true; }
+            let m = if let Some(ref re) = re_before {
+                re.is_match(line)
+            } else {
+                line.contains(pat)
+            };
+            if m && !insert_text.is_empty() {
+                result.push(insert_text.clone());
+                changed = true;
+            }
         }
 
         // Replace mode
@@ -193,13 +239,22 @@ pub fn run(
 
         // Insert after mode
         if let Some(pat) = after {
-            let m = if let Some(ref re) = re_after { re.is_match(line) } else { line.contains(pat) };
-            if m && !insert_text.is_empty() { result.push(insert_text.clone()); changed = true; }
+            let m = if let Some(ref re) = re_after {
+                re.is_match(line)
+            } else {
+                line.contains(pat)
+            };
+            if m && !insert_text.is_empty() {
+                result.push(insert_text.clone());
+                changed = true;
+            }
         }
     }
 
     let output = result.join("\n");
-    if output != file_content { changed = true; }
+    if output != file_content {
+        changed = true;
+    }
 
     if changed {
         if preview {
@@ -210,8 +265,12 @@ pub fn run(
                 let a = old_l.get(i).copied().unwrap_or("");
                 let b = new_l.get(i).copied().unwrap_or("");
                 if a != b {
-                    if !a.is_empty() { println!("- {}", a); }
-                    if !b.is_empty() { println!("+ {}", b); }
+                    if !a.is_empty() {
+                        println!("- {}", a);
+                    }
+                    if !b.is_empty() {
+                        println!("+ {}", b);
+                    }
                 }
             }
         } else {
@@ -223,14 +282,18 @@ pub fn run(
             };
             let formatted = apply_format(&final_out, &sig);
             storage.write_file(path, formatted.as_bytes())?;
-            println!("  Updated {} (preserved: {} {})", path.display(), sig.encoding, sig.line_ending);
+            println!(
+                "  Updated {} (preserved: {} {})",
+                path.display(),
+                sig.encoding,
+                sig.line_ending
+            );
         }
     } else {
         eprintln!("  (no changes made)");
     }
     Ok(())
 }
-
 
 /// 行范围替换 — 精确改指定行
 pub fn run_line_range(
@@ -246,7 +309,7 @@ pub fn run_line_range(
     let text = to_utf8_lf(&raw, &sig);
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
-    
+
     let (start, end) = if let Some((s, e)) = range_spec.split_once('-') {
         let s: usize = s.trim().parse().unwrap_or(1).max(1);
         let e: usize = e.trim().parse().unwrap_or(total);
@@ -255,9 +318,11 @@ pub fn run_line_range(
         let n: usize = range_spec.trim().parse().unwrap_or(1);
         (n, n.min(total))
     };
-    
-    let new_text: String = content.join("
-");
+
+    let new_text: String = content.join(
+        "
+",
+    );
     let mut result_lines: Vec<String> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let ln = i + 1;
@@ -267,22 +332,39 @@ pub fn run_line_range(
             result_lines.push(line.to_string());
         }
     }
-    
-    let output = result_lines.join("
-");
+
+    let output = result_lines.join(
+        "
+",
+    );
     if output == text {
         eprintln!("  (no changes made)");
         return Ok(());
     }
-    
+
     if preview {
-        println!("  Lines {}-{} replaced ({} lines → {} lines)", start, end, end - start + 1, content.len());
-        for c in content { println!("+ {}", c); }
+        println!(
+            "  Lines {}-{} replaced ({} lines → {} lines)",
+            start,
+            end,
+            end - start + 1,
+            content.len()
+        );
+        for c in content {
+            println!("+ {}", c);
+        }
         return Ok(());
     }
-    
+
     let formatted = apply_format(&output, &sig);
     storage.write_file(path, formatted.as_bytes())?;
-    println!("  Updated lines {}-{} in {} (preserved: {} {})", start, end, path.display(), sig.encoding, sig.line_ending);
+    println!(
+        "  Updated lines {}-{} in {} (preserved: {} {})",
+        start,
+        end,
+        path.display(),
+        sig.encoding,
+        sig.line_ending
+    );
     Ok(())
 }

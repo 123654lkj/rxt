@@ -2,11 +2,11 @@
 //!
 //! 输出文件的符号骨架, 函数体折叠成 {folded, N lines},
 //! 让 AI 用 15 行看清 1000 行文件的结构, 省 70% token.
-//! 
+//!
 //! 用 langs 提取符号, 用 {} 括号深度配对计算函数体大小.
 
-use std::path::{Path, PathBuf};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 /// digest 命令入口
 ///
@@ -14,7 +14,12 @@ use serde_json::json;
 /// - threshold: 函数体超过 N 行才折叠(默认 8)
 /// - budget: token 预算, 超了截断(目录模式下限制每个文件展示的符号数)
 /// - json_output: JSON 输出
-pub fn run(path: &Path, threshold: usize, budget: Option<usize>, json_output: bool) -> anyhow::Result<()> {
+pub fn run(
+    path: &Path,
+    threshold: usize,
+    budget: Option<usize>,
+    json_output: bool,
+) -> anyhow::Result<()> {
     // v0.7: 目录模式 — 一次 digest 整个模块, 灵感来自 headroom 的整目录 AST 压缩.
     // AI 第一次进大型代码库时, 一条命令拿到结构地图, 省 70%+ token.
     if path.is_dir() {
@@ -32,18 +37,21 @@ pub fn run(path: &Path, threshold: usize, budget: Option<usize>, json_output: bo
     let total = lines.len();
 
     // 计算每个符号的函数体行数
-    let entries: Vec<DigestEntry> = symbols.iter().map(|s| {
-        let body_lines = count_body(&lines, s.line, &s.kind);
-        let folded = body_lines > threshold;
-        DigestEntry {
-            kind: s.kind.clone(),
-            name: s.name.clone(),
-            signature: s.signature.clone(),
-            line: s.line,
-            body_lines,
-            folded,
-        }
-    }).collect();
+    let entries: Vec<DigestEntry> = symbols
+        .iter()
+        .map(|s| {
+            let body_lines = count_body(&lines, s.line, &s.kind);
+            let folded = body_lines > threshold;
+            DigestEntry {
+                kind: s.kind.clone(),
+                name: s.name.clone(),
+                signature: s.signature.clone(),
+                line: s.line,
+                body_lines,
+                folded,
+            }
+        })
+        .collect();
 
     if json_output {
         output_json(path, total, &entries, budget);
@@ -65,8 +73,10 @@ struct DigestEntry {
 /// 从符号定义行开始, 用 {} 深度配对计算函数体行数
 /// Python 用缩进(无 {}), 特殊处理
 pub fn count_body(lines: &[&str], start_line: usize, kind: &str) -> usize {
-    if start_line == 0 || start_line > lines.len() { return 0; }
-    let start_idx = start_line - 1;  // 转 0-indexed
+    if start_line == 0 || start_line > lines.len() {
+        return 0;
+    }
+    let start_idx = start_line - 1; // 转 0-indexed
 
     // Python: 没有大括号, 用缩进判断函数体结束
     if kind == "def" || kind == "class" {
@@ -77,12 +87,19 @@ pub fn count_body(lines: &[&str], start_line: usize, kind: &str) -> usize {
     let mut depth = 0i32;
     let mut found_open = false;
     for (i, line) in lines.iter().enumerate() {
-        if i < start_idx { continue; }
+        if i < start_idx {
+            continue;
+        }
         let t = line.trim();
         for ch in t.chars() {
             match ch {
-                '{' => { depth += 1; found_open = true; }
-                '}' => { depth -= 1; }
+                '{' => {
+                    depth += 1;
+                    found_open = true;
+                }
+                '}' => {
+                    depth -= 1;
+                }
                 _ => {}
             }
         }
@@ -94,16 +111,20 @@ pub fn count_body(lines: &[&str], start_line: usize, kind: &str) -> usize {
             return i - start_idx + 1;
         }
     }
-    lines.len() - start_idx  // 兜底: 到文件末尾
+    lines.len() - start_idx // 兜底: 到文件末尾
 }
 
 /// Python 函数体: 找到下一行缩进 <= 定义行缩进的位置
 fn count_body_python(lines: &[&str], start_idx: usize) -> usize {
     let def_indent = indent_of(lines[start_idx]);
     for (i, line) in lines.iter().enumerate() {
-        if i <= start_idx { continue; }
+        if i <= start_idx {
+            continue;
+        }
         let t = line.trim();
-        if t.is_empty() || t.starts_with('#') { continue; }
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
         let cur_indent = indent_of(line);
         // 遇到缩进 <= def 缩进的同级/外层语句, 函数体结束
         if cur_indent <= def_indent {
@@ -128,13 +149,23 @@ fn output_text(path: &Path, total: usize, entries: &[DigestEntry], budget: Optio
     }
     for e in &shown {
         if e.folded {
-            println!("  {:>5}  {} {{{} — folded, {} lines}}", e.line, e.signature.trim_end_matches('{').trim_end(), e.name, e.body_lines);
+            println!(
+                "  {:>5}  {} {{{} — folded, {} lines}}",
+                e.line,
+                e.signature.trim_end_matches('{').trim_end(),
+                e.name,
+                e.body_lines
+            );
         } else {
             println!("  {:>5}  {}", e.line, e.signature);
         }
     }
     if entries.len() > shown.len() {
-        eprintln!("\n(truncated: {}/{} symbols shown — increase --budget)", shown.len(), entries.len());
+        eprintln!(
+            "\n(truncated: {}/{} symbols shown — increase --budget)",
+            shown.len(),
+            entries.len()
+        );
     }
 }
 
@@ -144,16 +175,19 @@ fn output_json(path: &Path, total: usize, entries: &[DigestEntry], budget: Optio
         let max_items = b.max(3) / 15;
         shown.truncate(max_items);
     }
-    let arr: Vec<serde_json::Value> = shown.iter().map(|e| {
-        json!({
-            "kind": e.kind,
-            "name": e.name,
-            "signature": e.signature,
-            "line": e.line,
-            "body_lines": e.body_lines,
-            "folded": e.folded,
+    let arr: Vec<serde_json::Value> = shown
+        .iter()
+        .map(|e| {
+            json!({
+                "kind": e.kind,
+                "name": e.name,
+                "signature": e.signature,
+                "line": e.line,
+                "body_lines": e.body_lines,
+                "folded": e.folded,
+            })
         })
-    }).collect();
+        .collect();
     let out = json!({
         "file": path.display().to_string(),
         "total_lines": total,
@@ -173,7 +207,12 @@ fn output_json(path: &Path, total: usize, entries: &[DigestEntry], budget: Optio
 ///   - 每文件只展示签名(不展示函数体), 按文件分组
 ///   - budget 在目录模式下 = 每个文件最多展示多少符号(避免大文件淹没输出)
 ///   - 默认按文件路径排序, 稳定可读
-fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bool) -> anyhow::Result<()> {
+fn run_dir(
+    root: &Path,
+    threshold: usize,
+    budget: Option<usize>,
+    json_output: bool,
+) -> anyhow::Result<()> {
     // 收集所有支持的源文件
     let mut files: Vec<PathBuf> = crate::common::walk_clean(root, None, None)
         .into_iter()
@@ -183,11 +222,14 @@ fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bo
 
     if files.is_empty() {
         if json_output {
-            println!("{}", serde_json::to_string_pretty(&json!({
-                "root": root.display().to_string(),
-                "files": 0,
-                "digest": [],
-            }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "root": root.display().to_string(),
+                    "files": 0,
+                    "digest": [],
+                }))?
+            );
         } else {
             println!("目录 {} 下没有支持的源文件.", root.display());
         }
@@ -214,17 +256,20 @@ fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bo
         };
         let lines: Vec<&str> = content.lines().collect();
         let file_total = lines.len();
-        let mut entries: Vec<DigestEntry> = symbols.iter().map(|s| {
-            let body_lines = count_body(&lines, s.line, &s.kind);
-            DigestEntry {
-                kind: s.kind.clone(),
-                name: s.name.clone(),
-                signature: s.signature.clone(),
-                line: s.line,
-                body_lines,
-                folded: body_lines > threshold,
-            }
-        }).collect();
+        let mut entries: Vec<DigestEntry> = symbols
+            .iter()
+            .map(|s| {
+                let body_lines = count_body(&lines, s.line, &s.kind);
+                DigestEntry {
+                    kind: s.kind.clone(),
+                    name: s.name.clone(),
+                    signature: s.signature.clone(),
+                    line: s.line,
+                    body_lines,
+                    folded: body_lines > threshold,
+                }
+            })
+            .collect();
         total_symbols += entries.len();
 
         // 限制每文件展示数
@@ -232,17 +277,21 @@ fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bo
         entries.truncate(shown_count);
         total_shown += shown_count;
 
-        let rel = f.strip_prefix(root)
+        let rel = f
+            .strip_prefix(root)
             .map(|r| r.display().to_string())
             .unwrap_or_else(|_| f.display().to_string());
 
         if json_output {
-            let arr: Vec<serde_json::Value> = entries.iter().map(|e| {
-                json!({
-                    "kind": e.kind, "name": e.name, "signature": e.signature,
-                    "line": e.line, "body_lines": e.body_lines, "folded": e.folded,
+            let arr: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "kind": e.kind, "name": e.name, "signature": e.signature,
+                        "line": e.line, "body_lines": e.body_lines, "folded": e.folded,
+                    })
                 })
-            }).collect();
+                .collect();
             file_digests.push(json!({
                 "file": rel,
                 "total_lines": file_total,
@@ -263,14 +312,25 @@ fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bo
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("digest {} — {} 个文件, {}/{} 符号", root.display(), files.len(), total_shown, total_symbols);
+        println!(
+            "digest {} — {} 个文件, {}/{} 符号",
+            root.display(),
+            files.len(),
+            total_shown,
+            total_symbols
+        );
         println!();
         for (rel, file_total, entries) in &text_out {
             println!("── {} ({} lines) ──", rel, file_total);
             for e in entries {
                 if e.folded {
-                    println!("  {:>5}  {} {{{} — folded, {} lines}}", e.line,
-                        e.signature.trim_end_matches('{').trim_end(), e.name, e.body_lines);
+                    println!(
+                        "  {:>5}  {} {{{} — folded, {} lines}}",
+                        e.line,
+                        e.signature.trim_end_matches('{').trim_end(),
+                        e.name,
+                        e.body_lines
+                    );
                 } else {
                     println!("  {:>5}  {}", e.line, e.signature);
                 }
@@ -278,7 +338,10 @@ fn run_dir(root: &Path, threshold: usize, budget: Option<usize>, json_output: bo
             println!();
         }
         if total_shown < total_symbols {
-            println!("(部分符号被省略: {}/{} 显示, 用 --budget <N> 调高每文件上限)", total_shown, total_symbols);
+            println!(
+                "(部分符号被省略: {}/{} 显示, 用 --budget <N> 调高每文件上限)",
+                total_shown, total_symbols
+            );
         }
     }
     Ok(())

@@ -10,10 +10,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CodeItem {
-    pub kind: String,      // "fn" / "method" / "struct" / "class" / "interface" / "enum" / ...
-    pub name: String,      // 符号名
+    pub kind: String, // "fn" / "method" / "struct" / "class" / "interface" / "enum" / ...
+    pub name: String, // 符号名
     pub signature: String, // 完整签名(用于显示)
-    pub line: usize,       // 行号(1-indexed)
+    pub line: usize,  // 行号(1-indexed)
 }
 
 /// 检测文件语言(按扩展名)
@@ -64,9 +64,10 @@ impl Lang {
 
     pub fn all_known_exts() -> Vec<&'static str> {
         [
-            "rs", "go", "py", "pyw", "js", "jsx", "mjs", "cjs",
-            "ts", "tsx", "zero", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "java",
-        ].to_vec()
+            "rs", "go", "py", "pyw", "js", "jsx", "mjs", "cjs", "ts", "tsx", "zero", "c", "h",
+            "cpp", "cc", "cxx", "hpp", "hh", "java",
+        ]
+        .to_vec()
     }
 }
 
@@ -88,28 +89,54 @@ pub fn filter(items: Vec<CodeItem>, only_functions: bool, only_types: bool) -> V
     if !only_functions && !only_types {
         return items;
     }
-    items.into_iter().filter(|i| {
-        let is_fn = matches!(i.kind.as_str(),
-            "fn" | "method" | "function" | "constructor" | "destructor" | "getter" | "setter" | "async");
-        if only_functions { is_fn } else { !is_fn }
-    }).collect()
+    items
+        .into_iter()
+        .filter(|i| {
+            let is_fn = matches!(
+                i.kind.as_str(),
+                "fn" | "method"
+                    | "function"
+                    | "constructor"
+                    | "destructor"
+                    | "getter"
+                    | "setter"
+                    | "async"
+            );
+            if only_functions {
+                is_fn
+            } else {
+                !is_fn
+            }
+        })
+        .collect()
 }
 
 // ============ 通用工具函数(各语言解析器共享) ============
 
 /// 跳过行注释和块注释的简单状态机,返回每行是否"有效代码"
-pub fn code_lines(content: &str, line_comment: &str, block_start: &str, block_end: &str) -> Vec<(usize, String)> {
+pub fn code_lines(
+    content: &str,
+    line_comment: &str,
+    block_start: &str,
+    block_end: &str,
+) -> Vec<(usize, String)> {
     let mut result = Vec::new();
     let mut in_block = false;
     for (idx, line) in content.lines().enumerate() {
         let t = line.trim();
         if in_block {
-            if t.contains(block_end) { in_block = false; }
+            if t.contains(block_end) {
+                in_block = false;
+            }
             continue;
         }
-        if t.starts_with(line_comment) { continue; }
+        if t.starts_with(line_comment) {
+            continue;
+        }
         if t.starts_with(block_start) {
-            if !t.contains(block_end) { in_block = true; }
+            if !t.contains(block_end) {
+                in_block = true;
+            }
             continue;
         }
         result.push((idx + 1, line.to_string()));
@@ -119,19 +146,31 @@ pub fn code_lines(content: &str, line_comment: &str, block_start: &str, block_en
 
 /// 从签名提取第一个标识符名(跳过关键字)
 pub fn first_ident_after(s: &str, keyword: &str) -> String {
-    let after = s.find(keyword).map(|i| &s[i + keyword.len()..]).unwrap_or(s);
+    let after = s
+        .find(keyword)
+        .map(|i| &s[i + keyword.len()..])
+        .unwrap_or(s);
     let after = after.trim_start();
     let mut name = String::new();
     for c in after.chars() {
-        if c.is_alphanumeric() || c == '_' { name.push(c); }
-        else { break; }
+        if c.is_alphanumeric() || c == '_' {
+            name.push(c);
+        } else {
+            break;
+        }
     }
-    if name.is_empty() { "<anonymous>".to_string() } else { name }
+    if name.is_empty() {
+        "<anonymous>".to_string()
+    } else {
+        name
+    }
 }
 
 /// 截取签名到 { 或 ; 或行尾(去掉 trailing)
 pub fn trim_sig(line: &str) -> String {
-    let end = line.find(|c: char| c == '{' || c == ';').unwrap_or(line.len());
+    let end = line
+        .find(|c: char| c == '{' || c == ';')
+        .unwrap_or(line.len());
     line[..end].trim().trim_end_matches(',').trim().to_string()
 }
 
@@ -144,7 +183,7 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
     for (ln, line) in &lines {
         let t = line.trim();
         let (kw, kind) = if t.starts_with("pub async fn ") || t.starts_with("async fn ") {
-            ("fn", "fn")  // v0.8.1: 支持 async fn, kind 仍为 "fn" (callgraph 按 callable kind 过滤)
+            ("fn", "fn") // v0.8.1: 支持 async fn, kind 仍为 "fn" (callgraph 按 callable kind 过滤)
         } else if t.starts_with("pub fn ") || t.starts_with("fn ") {
             ("fn", "fn")
         } else if t.starts_with("pub struct ") || t.starts_with("struct ") {
@@ -157,7 +196,11 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
             ("type", "type")
         } else if t.starts_with("impl ") {
             ("impl", "impl")
-        } else if t.starts_with("pub const ") || t.starts_with("const ") || t.starts_with("pub static ") || t.starts_with("static ") {
+        } else if t.starts_with("pub const ")
+            || t.starts_with("const ")
+            || t.starts_with("pub static ")
+            || t.starts_with("static ")
+        {
             ("const", "const")
         } else if t.starts_with("pub mod ") || t.starts_with("mod ") {
             ("mod", "mod")
@@ -165,7 +208,9 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
             continue;
         };
         let sig = trim_sig(t);
-        if sig.len() <= 3 { continue; }
+        if sig.len() <= 3 {
+            continue;
+        }
         let name = if kind == "impl" {
             first_ident_after(&sig, "impl")
         } else {
@@ -180,7 +225,12 @@ fn rust_parse(content: &str) -> Vec<CodeItem> {
             };
             first_ident_after(&sig, &kw_full)
         };
-        items.push(CodeItem { kind: kind.to_string(), name, signature: sig, line: *ln });
+        items.push(CodeItem {
+            kind: kind.to_string(),
+            name,
+            signature: sig,
+            line: *ln,
+        });
     }
     items
 }
@@ -199,7 +249,7 @@ fn go_parse(content: &str) -> Vec<CodeItem> {
             let (kind, name) = if after.trim_start().starts_with('(') {
                 // 提取 method 名: 找 ) 后面的标识符
                 if let Some(close) = after.find(')') {
-                    let after_recv = after[close+1..].trim_start();
+                    let after_recv = after[close + 1..].trim_start();
                     let mname = first_ident(after_recv);
                     ("method", mname)
                 } else {
@@ -208,21 +258,44 @@ fn go_parse(content: &str) -> Vec<CodeItem> {
             } else {
                 ("fn", first_ident(after))
             };
-            items.push(CodeItem { kind: kind.to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: kind.to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("type ") {
             let sig = trim_sig(t);
             let rest = &t[5..];
             // type Name struct {...}  /  type Name interface {...}  /  type Name = X  /  type Name OtherType
             let name = first_ident(rest);
-            let kind = if sig.contains("struct") { "struct" }
-                       else if sig.contains("interface") { "interface" }
-                       else { "type" };
-            items.push(CodeItem { kind: kind.to_string(), name, signature: sig, line: *ln });
+            let kind = if sig.contains("struct") {
+                "struct"
+            } else if sig.contains("interface") {
+                "interface"
+            } else {
+                "type"
+            };
+            items.push(CodeItem {
+                kind: kind.to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("var ") || t.starts_with("const ") {
-            let kw = if t.starts_with("var ") { "var" } else { "const" };
+            let kw = if t.starts_with("var ") {
+                "var"
+            } else {
+                "const"
+            };
             let sig = trim_sig(t);
             let name = first_ident_after(&sig, kw);
-            items.push(CodeItem { kind: kw.to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: kw.to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         }
     }
     items
@@ -232,10 +305,17 @@ fn first_ident(s: &str) -> String {
     let s = s.trim_start();
     let mut name = String::new();
     for c in s.chars() {
-        if c.is_alphanumeric() || c == '_' { name.push(c); }
-        else { break; }
+        if c.is_alphanumeric() || c == '_' {
+            name.push(c);
+        } else {
+            break;
+        }
     }
-    if name.is_empty() { "<anonymous>".to_string() } else { name }
+    if name.is_empty() {
+        "<anonymous>".to_string()
+    } else {
+        name
+    }
 }
 
 // ---- Python ----
@@ -244,20 +324,37 @@ fn python_parse(content: &str) -> Vec<CodeItem> {
     for (idx, raw) in content.lines().enumerate() {
         let line = raw.trim_end();
         let t = line.trim_start();
-        if t.starts_with('#') { continue; }
+        if t.starts_with('#') {
+            continue;
+        }
         // 计算缩进级别(只认 class/def 顶层,不强制)
         if t.starts_with("def ") {
             let name = first_ident_after(t, "def");
             let sig = t.trim_end_matches(':').trim().to_string();
-            items.push(CodeItem { kind: "fn".to_string(), name, signature: sig, line: idx + 1 });
+            items.push(CodeItem {
+                kind: "fn".to_string(),
+                name,
+                signature: sig,
+                line: idx + 1,
+            });
         } else if t.starts_with("async def ") {
             let name = first_ident_after(t, "def");
             let sig = t.trim_end_matches(':').trim().to_string();
-            items.push(CodeItem { kind: "async".to_string(), name, signature: sig, line: idx + 1 });
+            items.push(CodeItem {
+                kind: "async".to_string(),
+                name,
+                signature: sig,
+                line: idx + 1,
+            });
         } else if t.starts_with("class ") {
             let name = first_ident_after(t, "class");
             let sig = t.trim_end_matches(':').trim().to_string();
-            items.push(CodeItem { kind: "class".to_string(), name, signature: sig, line: idx + 1 });
+            items.push(CodeItem {
+                kind: "class".to_string(),
+                name,
+                signature: sig,
+                line: idx + 1,
+            });
         }
     }
     items
@@ -273,15 +370,30 @@ fn js_parse(content: &str) -> Vec<CodeItem> {
         if let Some(rest) = t.strip_prefix("function ") {
             let name = first_ident(rest);
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "fn".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "fn".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("async function ") {
             let name = first_ident_after(t, "function");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "async".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "async".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("class ") {
             let name = first_ident_after(t, "class");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "class".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "class".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("export ") {
             // export function / export class / export const / export default
             let inner = t.trim_start_matches("export ").trim_start();
@@ -292,22 +404,48 @@ fn js_parse(content: &str) -> Vec<CodeItem> {
                 ("async", "function")
             } else if inner.starts_with("class ") {
                 ("class", "class")
-            } else if inner.starts_with("const ") || inner.starts_with("let ") || inner.starts_with("var ") {
-                ("const", if inner.starts_with("const ") {"const"} else if inner.starts_with("let ") {"let"} else {"var"})
+            } else if inner.starts_with("const ")
+                || inner.starts_with("let ")
+                || inner.starts_with("var ")
+            {
+                (
+                    "const",
+                    if inner.starts_with("const ") {
+                        "const"
+                    } else if inner.starts_with("let ") {
+                        "let"
+                    } else {
+                        "var"
+                    },
+                )
             } else {
                 continue;
             };
             let name = first_ident_after(inner, kw);
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: kind.to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: kind.to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("const ") || t.starts_with("let ") {
             // const name = () => / const name = function / const name = (
-            let kw = if t.starts_with("const ") { "const" } else { "let" };
+            let kw = if t.starts_with("const ") {
+                "const"
+            } else {
+                "let"
+            };
             // 检测是否是箭头函数/函数赋值(含 => 或 = function)
             if t.contains("=>") || t.contains("= function") || t.contains("= (") {
                 let name = first_ident_after(t, kw);
                 let sig = trim_sig(t);
-                items.push(CodeItem { kind: "fn".to_string(), name, signature: sig, line: *ln });
+                items.push(CodeItem {
+                    kind: "fn".to_string(),
+                    name,
+                    signature: sig,
+                    line: *ln,
+                });
             }
         }
     }
@@ -322,33 +460,65 @@ fn zero_parse(content: &str) -> Vec<CodeItem> {
         let t = line.trim();
         // 计算缩进: 只收顶层(缩进0)的定义, 跳过函数体内的局部 let
         let indent = line.len() - line.trim_start().len();
-        if indent > 0 { continue; }
+        if indent > 0 {
+            continue;
+        }
         // async fn 必须在 fn 之前判断
         if t.starts_with("async fn ") {
             let name = first_ident_after(t, "fn");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "async".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "async".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("fn ") {
             let name = first_ident_after(t, "fn");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "fn".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "fn".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("class ") {
             let name = first_ident_after(t, "class");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "class".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "class".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("enum ") {
             let name = first_ident_after(t, "enum");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "enum".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "enum".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.starts_with("import ") {
             let name = first_ident_after(t, "import");
-            items.push(CodeItem { kind: "import".to_string(), name, signature: t.to_string(), line: *ln });
+            items.push(CodeItem {
+                kind: "import".to_string(),
+                name,
+                signature: t.to_string(),
+                line: *ln,
+            });
         } else if t.starts_with("let ") {
             // 顶层全局变量(如 lexer.zero 的 let keywords = {...})
             let name = first_ident_after(t, "let");
             let sig = trim_sig(t);
             if sig.contains('=') {
-                items.push(CodeItem { kind: "let".to_string(), name, signature: sig, line: *ln });
+                items.push(CodeItem {
+                    kind: "let".to_string(),
+                    name,
+                    signature: sig,
+                    line: *ln,
+                });
             }
         }
     }
@@ -364,8 +534,13 @@ fn c_parse(content: &str) -> Vec<CodeItem> {
         // 返回类型 函数名(...) {  ->  简化: 以 ( 为锚点
         // 排除常见非函数(control 关键字)
         let lower = t.to_lowercase();
-        if lower.starts_with("if ") || lower.starts_with("for ") || lower.starts_with("while ")
-           || lower.starts_with("switch ") || lower.starts_with("return ") || lower.starts_with("sizeof") {
+        if lower.starts_with("if ")
+            || lower.starts_with("for ")
+            || lower.starts_with("while ")
+            || lower.starts_with("switch ")
+            || lower.starts_with("return ")
+            || lower.starts_with("sizeof")
+        {
             continue;
         }
         if t.contains('(') && t.contains(')') {
@@ -373,20 +548,54 @@ fn c_parse(content: &str) -> Vec<CodeItem> {
             if let Some(paren) = t.find('(') {
                 let before = t[..paren].trim();
                 // name 是 before 最后一个 token
-                let name = before.rsplit(|c: char| c.is_whitespace() || c == '*').next().unwrap_or("").to_string();
-                if !name.is_empty() && name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
+                let name = before
+                    .rsplit(|c: char| c.is_whitespace() || c == '*')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphabetic() || c == '_')
+                        .unwrap_or(false)
+                {
                     // 区分 struct/enum/class 定义
-                    let kind = if t.starts_with("struct ") { "struct" }
-                               else if t.starts_with("class ") { "class" }
-                               else { "fn" };
+                    let kind = if t.starts_with("struct ") {
+                        "struct"
+                    } else if t.starts_with("class ") {
+                        "class"
+                    } else {
+                        "fn"
+                    };
                     let sig = trim_sig(t);
-                    items.push(CodeItem { kind: kind.to_string(), name, signature: sig, line: *ln });
+                    items.push(CodeItem {
+                        kind: kind.to_string(),
+                        name,
+                        signature: sig,
+                        line: *ln,
+                    });
                 }
             }
-        } else if t.starts_with("typedef struct") || t.starts_with("struct ") || t.starts_with("class ") {
+        } else if t.starts_with("typedef struct")
+            || t.starts_with("struct ")
+            || t.starts_with("class ")
+        {
             let sig = trim_sig(t);
-            let name = first_ident_after(&sig, if t.starts_with("struct") {"struct"} else {"class"});
-            items.push(CodeItem { kind: "struct".to_string(), name, signature: sig, line: *ln });
+            let name = first_ident_after(
+                &sig,
+                if t.starts_with("struct") {
+                    "struct"
+                } else {
+                    "class"
+                },
+            );
+            items.push(CodeItem {
+                kind: "struct".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         }
     }
     items
@@ -402,20 +611,36 @@ fn java_parse(content: &str) -> Vec<CodeItem> {
         if t.contains(" class ") {
             let name = first_ident_after(t, "class");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "class".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "class".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.contains(" interface ") {
             let name = first_ident_after(t, "interface");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "interface".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "interface".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.contains(" enum ") {
             let name = first_ident_after(t, "enum");
             let sig = trim_sig(t);
-            items.push(CodeItem { kind: "enum".to_string(), name, signature: sig, line: *ln });
+            items.push(CodeItem {
+                kind: "enum".to_string(),
+                name,
+                signature: sig,
+                line: *ln,
+            });
         } else if t.contains("(") && t.contains(")") {
             // 方法: 修饰符? 返回类型 name(...) {
             // 排除 if/for/while 等
             let lower = t.to_lowercase();
-            if lower.starts_with("if ") || lower.starts_with("for ") || lower.starts_with("while ") {
+            if lower.starts_with("if ") || lower.starts_with("for ") || lower.starts_with("while ")
+            {
                 continue;
             }
             if let Some(p) = t.find('(') {
@@ -423,10 +648,21 @@ fn java_parse(content: &str) -> Vec<CodeItem> {
                 let parts: Vec<&str> = before.rsplitn(2, char::is_whitespace).collect();
                 let name = parts.first().unwrap_or(&"").to_string();
                 // 排除 main 控制流(返回类型存在)
-                if !name.is_empty() && name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
-                   && parts.len() == 2 {
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphabetic() || c == '_')
+                        .unwrap_or(false)
+                    && parts.len() == 2
+                {
                     let sig = trim_sig(t);
-                    items.push(CodeItem { kind: "method".to_string(), name, signature: sig, line: *ln });
+                    items.push(CodeItem {
+                        kind: "method".to_string(),
+                        name,
+                        signature: sig,
+                        line: *ln,
+                    });
                 }
             }
         }

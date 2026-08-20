@@ -13,11 +13,18 @@
 //!   rxt snapshot --diff <id>            # 看快照与当前的差异
 //!   rxt snapshot --clean 30             # 清理 30 天前的
 
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn run(target: Option<&str>, label: Option<&str>, list: bool, restore: Option<&str>, diff: Option<&str>, clean_days: Option<u64>) -> anyhow::Result<()> {
+pub fn run(
+    target: Option<&str>,
+    label: Option<&str>,
+    list: bool,
+    restore: Option<&str>,
+    diff: Option<&str>,
+    clean_days: Option<u64>,
+) -> anyhow::Result<()> {
     let store = snapshot_store()?;
 
     if let Some(days) = clean_days {
@@ -53,17 +60,24 @@ fn create_snapshot(store: &Path, target: &Path, label: Option<&str>) -> anyhow::
     let ts = chrono::DateTime::from_timestamp(now as i64, 0)
         .map(|d| d.format("%Y%m%d_%H%M%S").to_string())
         .unwrap_or_else(|| now.to_string());
-    let lbl = label.map(|l| {
-        // 只保留安全字符
-        let safe: String = l.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-        format!("_{}", safe)
-    }).unwrap_or_default();
+    let lbl = label
+        .map(|l| {
+            // 只保留安全字符
+            let safe: String = l
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            format!("_{}", safe)
+        })
+        .unwrap_or_default();
     let id = format!("{}{}", ts, lbl);
 
     let snap_dir = store.join(&id);
     fs::create_dir_all(&snap_dir)?;
 
-    let abs = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let abs = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
     let dest = snap_dir.join("data");
     let count;
     if abs.is_dir() {
@@ -84,7 +98,10 @@ fn create_snapshot(store: &Path, target: &Path, label: Option<&str>) -> anyhow::
         "label": label.unwrap_or(""),
         "file_count": count,
     });
-    fs::write(snap_dir.join("meta.json"), serde_json::to_string_pretty(&meta)?)?;
+    fs::write(
+        snap_dir.join("meta.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
 
     println!("📸 快照已创建");
     println!("  ID:     {}", id);
@@ -101,7 +118,11 @@ fn list_snapshots(store: &Path) -> anyhow::Result<()> {
         let meta_path = entry.path().join("meta.json");
         if let Ok(content) = fs::read_to_string(&meta_path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                let id = v
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
                 snaps.push((id, v));
             }
         }
@@ -118,7 +139,10 @@ fn list_snapshots(store: &Path) -> anyhow::Result<()> {
         let label = m.get("label").and_then(|v| v.as_str()).unwrap_or("");
         let count = m.get("file_count").and_then(|v| v.as_u64()).unwrap_or(0);
         let target = m.get("target").and_then(|v| v.as_str()).unwrap_or("");
-        let target_short = Path::new(target).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| target.to_string());
+        let target_short = Path::new(target)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.to_string());
         println!("{:<24} {:<10} {:>6} {}", id, label, count, target_short);
     }
     println!("\n共 {} 个快照", snaps.len());
@@ -130,19 +154,32 @@ fn restore_snapshot(store: &Path, id: &str) -> anyhow::Result<()> {
     if !snap_dir.exists() {
         anyhow::bail!("快照不存在: {} (用 --list 查看)", id);
     }
-    let meta: serde_json::Value = serde_json::from_str(&fs::read_to_string(snap_dir.join("meta.json"))?)?;
-    let target = meta.get("target").and_then(|v| v.as_str()).ok_or_else(|| anyhow::anyhow!("meta 损坏"))?;
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(snap_dir.join("meta.json"))?)?;
+    let target = meta
+        .get("target")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("meta 损坏"))?;
     let data_dir = snap_dir.join("data");
 
     // 恢复前先拍当前状态(防止误操作)
     if Path::new(target).exists() {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let pre_id = format!("{}_PRE_RESTORE_{}", chrono::DateTime::from_timestamp(now as i64, 0)
-            .map(|d| d.format("%Y%m%d_%H%M%S").to_string()).unwrap_or_else(|| now.to_string()), id);
+        let pre_id = format!(
+            "{}_PRE_RESTORE_{}",
+            chrono::DateTime::from_timestamp(now as i64, 0)
+                .map(|d| d.format("%Y%m%d_%H%M%S").to_string())
+                .unwrap_or_else(|| now.to_string()),
+            id
+        );
         let pre_dir = store.join(&pre_id);
         fs::create_dir_all(&pre_dir)?;
         let target_path = Path::new(target);
-        let pre_count = if target_path.is_dir() { copy_dir(target_path, &pre_dir.join("data"))? } else { 1 };
+        let pre_count = if target_path.is_dir() {
+            copy_dir(target_path, &pre_dir.join("data"))?
+        } else {
+            1
+        };
         fs::write(pre_dir.join("meta.json"), serde_json::json!({
             "id": pre_id, "target": target, "label": format!("回滚前自动备份-{}", id), "file_count": pre_count,
         }).to_string())?;
@@ -171,25 +208,38 @@ fn diff_snapshot(store: &Path, id: &str) -> anyhow::Result<()> {
     if !snap_dir.exists() {
         anyhow::bail!("快照不存在: {}", id);
     }
-    let meta: serde_json::Value = serde_json::from_str(&fs::read_to_string(snap_dir.join("meta.json"))?)?;
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(snap_dir.join("meta.json"))?)?;
     let target = meta.get("target").and_then(|v| v.as_str()).unwrap_or(".");
     let data_dir = snap_dir.join("data");
 
     // 用 rxt 自身的 diff? 这里简单比较文件列表 + 大小
     println!("快照 {} vs 当前 {}:", id, target);
     let snap_files = collect_files(&data_dir);
-    let cur_files = if Path::new(target).exists() { collect_files(Path::new(target)) } else { Vec::new() };
+    let cur_files = if Path::new(target).exists() {
+        collect_files(Path::new(target))
+    } else {
+        Vec::new()
+    };
 
     let mut changed = 0;
     let mut added = 0;
     let mut removed = 0;
-    let snap_set: std::collections::HashMap<&String, u64> = snap_files.iter().map(|(p,s)| (p, *s)).collect();
-    let cur_set: std::collections::HashMap<&String, u64> = cur_files.iter().map(|(p,s)| (p, *s)).collect();
+    let snap_set: std::collections::HashMap<&String, u64> =
+        snap_files.iter().map(|(p, s)| (p, *s)).collect();
+    let cur_set: std::collections::HashMap<&String, u64> =
+        cur_files.iter().map(|(p, s)| (p, *s)).collect();
 
     for (p, s) in &snap_files {
         match cur_set.get(p) {
-            None => { println!("  - (已删) {}", p); removed += 1; }
-            Some(cs) if cs != s => { println!("  ~ (改动) {} ({} -> {})", p, s, cs); changed += 1; }
+            None => {
+                println!("  - (已删) {}", p);
+                removed += 1;
+            }
+            Some(cs) if cs != s => {
+                println!("  ~ (改动) {} ({} -> {})", p, s, cs);
+                changed += 1;
+            }
             _ => {}
         }
     }
@@ -250,7 +300,10 @@ fn collect_files(base: &Path) -> Vec<(String, u64)> {
                 if p.is_dir() {
                     walk(base, &p, out);
                 } else {
-                    let rel = p.strip_prefix(base).map(|p| p.display().to_string()).unwrap_or_default();
+                    let rel = p
+                        .strip_prefix(base)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
                     let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     out.push((rel, size));
                 }

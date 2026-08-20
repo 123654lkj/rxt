@@ -47,7 +47,9 @@ pub fn run(text: &str, _invert: bool, _compact: bool) -> anyhow::Result<()> {
     }
     println!("⚠ 本地版(无 http feature)不能在线生成二维码。");
     println!("手机浏览器打开以下链接查看:");
-    println!("https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={}",
-             urlencoding::encode(text));
+    println!(
+        "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={}",
+        urlencoding::encode(text)
+    );
     Ok(())
 }

@@ -3,9 +3,9 @@
 //! 消灭各模块的 if let Some(remote) 重复分支。
 //! 模块只调 storage.read_file()，不关心数据从哪来。
 
-use std::path::Path;
-use crate::signature::{FileSignature, to_utf8_lf};
 use crate::remote::RemoteChannel;
+use crate::signature::{to_utf8_lf, FileSignature};
+use std::path::Path;
 
 /// 统一存储接口: 本地或远程
 pub enum Storage<'a> {
@@ -50,7 +50,12 @@ impl<'a> Storage<'a> {
     }
 
     /// 写文件 + 指定权限
-    pub fn write_file_with_mode(&self, path: &Path, content: &[u8], mode: i32) -> anyhow::Result<()> {
+    pub fn write_file_with_mode(
+        &self,
+        path: &Path,
+        content: &[u8],
+        mode: i32,
+    ) -> anyhow::Result<()> {
         match self {
             Storage::Local => {
                 if let Some(parent) = path.parent() {

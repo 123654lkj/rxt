@@ -13,11 +13,18 @@
 //!   rxt recipe rm backup               # 删除
 //!   rxt recipe run backup --dry-run    # 只看会执行什么
 
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn run(action: &str, name: Option<&str>, content: Option<&str>, args: &[String], dry_run: bool, json: bool) -> anyhow::Result<()> {
+pub fn run(
+    action: &str,
+    name: Option<&str>,
+    content: Option<&str>,
+    args: &[String],
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     let store = recipe_store()?;
     match action {
         "add" | "create" | "set" => {
@@ -76,7 +83,12 @@ fn add(store: &Path, name: &str, content: &str) -> anyhow::Result<()> {
     fs::write(&path, content)?;
     // 计算行数和命令数
     let lines = content.lines().filter(|l| !l.trim().is_empty()).count();
-    println!("✓ recipe '{}' 已保存 ({} 行, {})", name, lines, path.display());
+    println!(
+        "✓ recipe '{}' 已保存 ({} 行, {})",
+        name,
+        lines,
+        path.display()
+    );
     println!("\n运行: rxt recipe run {}", name);
     Ok(())
 }
@@ -88,7 +100,13 @@ fn list(store: &Path, json: bool) -> anyhow::Result<()> {
             let p = entry.path();
             if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
                 if let Ok(content) = fs::read_to_string(&p) {
-                    let preview: String = content.lines().next().unwrap_or("").chars().take(50).collect();
+                    let preview: String = content
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(50)
+                        .collect();
                     let lines = content.lines().filter(|l| !l.trim().is_empty()).count();
                     recipes.push((stem.to_string(), preview, lines));
                 }
@@ -97,7 +115,10 @@ fn list(store: &Path, json: bool) -> anyhow::Result<()> {
     }
     recipes.sort_by(|a, b| a.0.cmp(&b.0));
     if json {
-        let arr: Vec<_> = recipes.iter().map(|(n, p, l)| serde_json::json!({"name": n, "lines": l, "preview": p})).collect();
+        let arr: Vec<_> = recipes
+            .iter()
+            .map(|(n, p, l)| serde_json::json!({"name": n, "lines": l, "preview": p}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&arr)?);
         return Ok(());
     }
@@ -130,16 +151,26 @@ fn run_recipe(store: &Path, name: &str, args: &[String], dry_run: bool) -> anyho
         return Ok(());
     }
 
-    let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
     println!("▶ 执行 recipe '{}':", name);
-    let status = Command::new(shell).arg(flag).arg(&content)
+    let status = Command::new(shell)
+        .arg(flag)
+        .arg(&content)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
     if status.success() {
         println!("\n✓ recipe '{}' 完成", name);
     } else {
-        anyhow::bail!("recipe '{}' 失败 (exit {})", name, status.code().unwrap_or(-1));
+        anyhow::bail!(
+            "recipe '{}' 失败 (exit {})",
+            name,
+            status.code().unwrap_or(-1)
+        );
     }
     Ok(())
 }
@@ -166,7 +197,13 @@ fn remove(store: &Path, name: &str) -> anyhow::Result<()> {
 
 fn edit(store: &Path, name: &str) -> anyhow::Result<()> {
     let path = recipe_path(store, name);
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| if cfg!(windows) { "notepad".into() } else { "nano".into() });
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
+        if cfg!(windows) {
+            "notepad".into()
+        } else {
+            "nano".into()
+        }
+    });
     let status = Command::new(&editor).arg(&path).status()?;
     if !status.success() {
         anyhow::bail!("编辑器退出码 {}", status.code().unwrap_or(-1));
@@ -176,5 +213,7 @@ fn edit(store: &Path, name: &str) -> anyhow::Result<()> {
 }
 
 fn sanitize(name: &str) -> String {
-    name.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect()
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect()
 }

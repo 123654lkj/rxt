@@ -36,10 +36,10 @@ impl std::fmt::Display for Encoding {
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LineEnding {
-    LF,      // \n (Linux/Mac)
-    CRLF,    // \r\n (Windows)
-    CR,      // \r (老 Mac，罕见)
-    Mixed,   // 混合（警告）
+    LF,    // \n (Linux/Mac)
+    CRLF,  // \r\n (Windows)
+    CR,    // \r (老 Mac，罕见)
+    Mixed, // 混合（警告）
 }
 
 impl std::fmt::Display for LineEnding {
@@ -58,8 +58,8 @@ impl std::fmt::Display for LineEnding {
 #[serde(rename_all = "lowercase")]
 pub enum IndentStyle {
     Tab,
-    Spaces(usize),  // 2, 4, 8 等
-    None,           // 没有缩进或无法检测
+    Spaces(usize), // 2, 4, 8 等
+    None,          // 没有缩进或无法检测
 }
 
 impl std::fmt::Display for IndentStyle {
@@ -146,7 +146,8 @@ fn detect_bom(raw: &[u8]) -> bool {
     if raw.len() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
         return true;
     }
-    if raw.len() >= 2 && ((raw[0] == 0xFF && raw[1] == 0xFE) || (raw[0] == 0xFE && raw[1] == 0xFF)) {
+    if raw.len() >= 2 && ((raw[0] == 0xFF && raw[1] == 0xFE) || (raw[0] == 0xFE && raw[1] == 0xFF))
+    {
         return true;
     }
     false
@@ -204,7 +205,8 @@ fn detect_indent(raw: &[u8]) -> IndentStyle {
     let lines: Vec<&str> = text.lines().take(50).collect();
 
     let mut tab_count = 0;
-    let mut space_counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut space_counts: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
 
     for line in lines {
         if line.trim().is_empty() {
@@ -219,7 +221,10 @@ fn detect_indent(raw: &[u8]) -> IndentStyle {
         if line.starts_with('\t') {
             tab_count += 1;
         } else if line.starts_with(' ') {
-            space_counts.entry(leading).and_modify(|c| *c += 1).or_insert(1);
+            space_counts
+                .entry(leading)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
         }
     }
 
@@ -238,9 +243,13 @@ fn detect_indent(raw: &[u8]) -> IndentStyle {
     // 找到最常见的空格数（可能是 2, 4, 8 的倍数）
     if let Some((&indent_size, _)) = space_counts.iter().max_by_key(|(_, &count)| count) {
         // 规范化到常见缩进
-        let normalized = if indent_size <= 2 { 2 }
-                        else if indent_size <= 4 { 4 }
-                        else { 8 };
+        let normalized = if indent_size <= 2 {
+            2
+        } else if indent_size <= 4 {
+            4
+        } else {
+            8
+        };
         return IndentStyle::Spaces(normalized);
     }
 

@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// 依赖分析 — Cargo.toml 依赖信息
 pub fn run(target: &str, tree: bool, json_output: bool, check: bool) -> anyhow::Result<()> {
@@ -12,17 +12,25 @@ pub fn run(target: &str, tree: bool, json_output: bool, check: bool) -> anyhow::
     } else {
         // Try to find Cargo.toml
         let p = Path::new(target);
-        if p.join("Cargo.toml").exists() { p.join("Cargo.toml") }
-        else { p.to_path_buf() }
+        if p.join("Cargo.toml").exists() {
+            p.join("Cargo.toml")
+        } else {
+            p.to_path_buf()
+        }
     };
 
-    if !path.exists() && !path.to_string_lossy().contains('/') && !path.to_string_lossy().contains('\\') {
+    if !path.exists()
+        && !path.to_string_lossy().contains('/')
+        && !path.to_string_lossy().contains('\\')
+    {
         // Maybe it's a crate name, try cargo search
         return search_crate(target, json_output);
     }
 
     let content = fs::read_to_string(&path)?;
-    let parsed: toml::Value = content.parse().map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
+    let parsed: toml::Value = content
+        .parse()
+        .map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
 
     if json_output {
         let deps = extract_deps_json(&parsed);
@@ -39,9 +47,21 @@ pub fn run(target: &str, tree: bool, json_output: bool, check: bool) -> anyhow::
 }
 
 fn print_deps(parsed: &toml::Value, path: &Path) {
-    let name = parsed.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("?");
-    let version = parsed.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str()).unwrap_or("?");
-    let edition = parsed.get("package").and_then(|p| p.get("edition")).and_then(|e| e.as_str()).unwrap_or("?");
+    let name = parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("?");
+    let version = parsed
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let edition = parsed
+        .get("package")
+        .and_then(|p| p.get("edition"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("?");
 
     println!("Crate: {} v{} (edition {})", name, version, edition);
     println!("File: {}", path.display());
@@ -77,7 +97,8 @@ fn print_deps(parsed: &toml::Value, path: &Path) {
         sorted.sort_by_key(|(k, _)| *k);
         for (name, val) in &sorted {
             if let Some(features_list) = val.as_array() {
-                let enabled: Vec<String> = features_list.iter()
+                let enabled: Vec<String> = features_list
+                    .iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
                 if !enabled.is_empty() {
@@ -93,26 +114,45 @@ fn dep_info(val: &toml::Value) -> String {
         format!("\"{}\"", s)
     } else if let Some(table) = val.as_table() {
         let mut parts = Vec::new();
-        if let Some(v) = table.get("version").and_then(|v| v.as_str()) { parts.push(format!("v{}", v)); }
+        if let Some(v) = table.get("version").and_then(|v| v.as_str()) {
+            parts.push(format!("v{}", v));
+        }
         if let Some(f) = table.get("features").and_then(|f| f.as_array()) {
             let feats: Vec<&str> = f.iter().filter_map(|v| v.as_str()).collect();
-            if !feats.is_empty() { parts.push(format!("features=[{}]", feats.join(","))); }
+            if !feats.is_empty() {
+                parts.push(format!("features=[{}]", feats.join(",")));
+            }
         }
-        if let Some(true) = table.get("optional").and_then(|o| o.as_bool()) { parts.push("optional".to_string()); }
-        if let Some(g) = table.get("git").and_then(|g| g.as_str()) { parts.push(format!("git={}", g)); }
+        if let Some(true) = table.get("optional").and_then(|o| o.as_bool()) {
+            parts.push("optional".to_string());
+        }
+        if let Some(g) = table.get("git").and_then(|g| g.as_str()) {
+            parts.push(format!("git={}", g));
+        }
         parts.join(" ")
-    } else { "?".to_string() }
+    } else {
+        "?".to_string()
+    }
 }
 
 fn extract_deps_json(parsed: &toml::Value) -> serde_json::Value {
-    let name = parsed.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str());
-    let version = parsed.get("package").and_then(|p| p.get("version")).and_then(|v| v.as_str());
+    let name = parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str());
+    let version = parsed
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str());
 
     let mut deps = Vec::new();
     if let Some(table) = parsed.get("dependencies").and_then(|d| d.as_table()) {
         for (name, val) in table {
-            let info = if let Some(s) = val.as_str() { serde_json::json!({"version": s}) }
-                       else { serde_json::json!({}) };
+            let info = if let Some(s) = val.as_str() {
+                serde_json::json!({"version": s})
+            } else {
+                serde_json::json!({})
+            };
             deps.push(serde_json::json!({"name": name, "info": info, "kind": "normal"}));
         }
     }
@@ -126,8 +166,17 @@ fn extract_deps_json(parsed: &toml::Value) -> serde_json::Value {
 
 fn dep_tree(target: &str, json_output: bool) -> anyhow::Result<()> {
     let output = std::process::Command::new("cargo")
-        .args(["tree", "-p", target, if json_output { "--format=json" } else { "" }])
-        .args(if json_output { &[][..] } else { &["--prefix", "depth"][..] })
+        .args([
+            "tree",
+            "-p",
+            target,
+            if json_output { "--format=json" } else { "" },
+        ])
+        .args(if json_output {
+            &[][..]
+        } else {
+            &["--prefix", "depth"][..]
+        })
         .output()
         .map_err(|e| anyhow::anyhow!("cargo tree failed: {}", e))?;
     println!("{}", String::from_utf8_lossy(&output.stdout));
@@ -145,7 +194,10 @@ fn search_crate(name: &str, json_output: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("cargo search failed: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if json_output {
-        let results: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::json!({"info": l})).collect();
+        let results: Vec<serde_json::Value> = stdout
+            .lines()
+            .map(|l| serde_json::json!({"info": l}))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&results)?);
     } else {
         println!("Search results for '{}':", name);
@@ -164,7 +216,9 @@ fn dep_check(target: &str) -> anyhow::Result<()> {
             if !stdout.trim().is_empty() {
                 println!("Available updates:");
                 println!("{}", stdout);
-            } else { println!("All dependencies up to date"); }
+            } else {
+                println!("All dependencies up to date");
+            }
         }
     }
     Ok(())

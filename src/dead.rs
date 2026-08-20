@@ -6,8 +6,8 @@
 //! rxt dead          # 扫描项目, 列出不可达函数
 //! rxt dead --json
 
-use std::collections::BTreeMap;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 pub fn run(root: &std::path::Path, json: bool) -> anyhow::Result<()> {
     let cg = crate::callgraph::CallGraph::build(root)?;
@@ -19,8 +19,10 @@ pub fn run(root: &std::path::Path, json: bool) -> anyhow::Result<()> {
         if json {
             println!("{}", json!({"dead_count": 0, "total_symbols": total_nodes}));
         } else {
-            println!("💀 没有发现死代码 ({} 个符号全部可达, {} 个入口, {} 条边)",
-                total_nodes, total_entries, total_edges);
+            println!(
+                "💀 没有发现死代码 ({} 个符号全部可达, {} 个入口, {} 条边)",
+                total_nodes, total_entries, total_edges
+            );
         }
         return Ok(());
     }
@@ -32,16 +34,29 @@ pub fn run(root: &std::path::Path, json: bool) -> anyhow::Result<()> {
     }
 
     if json {
-        let arr: Vec<_> = dead.iter().map(|n| json!({
-            "name": n.name, "kind": n.kind, "file": n.file, "line": n.line,
-        })).collect();
-        println!("{}", serde_json::to_string_pretty(&json!({
-            "dead_count": dead.len(),
-            "total_symbols": total_nodes,
-            "dead": arr,
-        }))?);
+        let arr: Vec<_> = dead
+            .iter()
+            .map(|n| {
+                json!({
+                    "name": n.name, "kind": n.kind, "file": n.file, "line": n.line,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dead_count": dead.len(),
+                "total_symbols": total_nodes,
+                "dead": arr,
+            }))?
+        );
     } else {
-        println!("💀 死代码检测 — {} 个不可达函数 (共 {} 个符号, {} 条边)", dead.len(), total_nodes, total_edges);
+        println!(
+            "💀 死代码检测 — {} 个不可达函数 (共 {} 个符号, {} 条边)",
+            dead.len(),
+            total_nodes,
+            total_edges
+        );
         println!("   (从 main/pub/export/tests 出发, 不可达的函数)");
         println!();
         for (file, nodes) in &by_file {

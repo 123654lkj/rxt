@@ -10,9 +10,9 @@
 //!   rxt pack . --json
 //!   rxt --host huhu pack /home/huhu/torrent-panel-v2
 
+use serde_json::json;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use serde_json::json;
 
 /// 粗略 token 估计：中英混排约 3.5 字符 ≈ 1 token
 fn est_tokens(chars: usize) -> usize {
@@ -176,8 +176,15 @@ pub fn run(
         .into_iter()
         .filter(|p| crate::langs::is_supported(p))
         .filter(|p| {
-            let n = p.file_name().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
-            !(n.ends_with(".bak") || n.contains(".bak.") || n.ends_with(".orig") || n.ends_with("~"))
+            let n = p
+                .file_name()
+                .and_then(|x| x.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            !(n.ends_with(".bak")
+                || n.contains(".bak.")
+                || n.ends_with(".orig")
+                || n.ends_with("~"))
         })
         .collect();
     files.sort();
@@ -400,7 +407,9 @@ pub fn run(
     }
 
     body.push_str("## next\n");
-    body.push_str("digest <f> | refs <Sym> -p . --callers | read <f> -H 60 | grep <pat> --head 20\n");
+    body.push_str(
+        "digest <f> | refs <Sym> -p . --callers | read <f> -H 60 | grep <pat> --head 20\n",
+    );
 
     // 硬截断兜底（UTF-8 安全）
     if body.len() > budget {
@@ -446,10 +455,7 @@ fn compact_sig(sig: &str) -> String {
 
 fn build_compact_tree(root: &Path, depth: usize, max_lines: usize) -> String {
     let mut out = String::new();
-    let name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".");
+    let name = root.file_name().and_then(|n| n.to_str()).unwrap_or(".");
     out.push_str(name);
     out.push('\n');
     let ignore = crate::common::load_gitignore_pub(root);

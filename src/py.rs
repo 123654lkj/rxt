@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// 执行内联 Python — 替代 PowerShel 模板的 8 行垫脚石
@@ -21,7 +21,11 @@ pub fn run(code: Option<&str>, file: Option<&PathBuf>) -> anyhow::Result<()> {
     // Write UTF-8 no BOM
     std::fs::write(&py_path, source.as_bytes())?;
 
-    let python = if cfg!(windows) { r"C:\Program Files\Python311\python.exe" } else { "python3" };
+    let python = if cfg!(windows) {
+        r"C:\Program Files\Python311\python.exe"
+    } else {
+        "python3"
+    };
     let output = Command::new(python)
         .arg(&py_path)
         .stdout(Stdio::inherit())

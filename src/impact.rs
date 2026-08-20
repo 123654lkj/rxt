@@ -7,21 +7,29 @@
 //! rxt impact --diff                    # 自动取 git diff 改动的文件
 //! rxt impact src/remote.rs --json
 
-use std::path::{Path, PathBuf};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 pub fn run(files: &[PathBuf], use_diff: bool, root: &Path, json: bool) -> anyhow::Result<()> {
     // 确定改动的文件列表
     let changed: Vec<String> = if use_diff {
         // 从 git diff 获取改动文件
         let output = crate::git::git(&["diff", "--name-only", "HEAD"])?;
-        output.lines().map(|l| l.to_string()).filter(|l| !l.is_empty()).collect()
+        output
+            .lines()
+            .map(|l| l.to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
     } else {
-        files.iter().map(|f| {
-            // 转成相对 root 的路径
-            f.strip_prefix(root).map(|r| r.display().to_string())
-                .unwrap_or_else(|_| f.display().to_string())
-        }).collect()
+        files
+            .iter()
+            .map(|f| {
+                // 转成相对 root 的路径
+                f.strip_prefix(root)
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_else(|_| f.display().to_string())
+            })
+            .collect()
     };
 
     if changed.is_empty() {
@@ -49,13 +57,20 @@ pub fn run(files: &[PathBuf], use_diff: bool, root: &Path, json: bool) -> anyhow
         let arr: Vec<_> = impacted.iter().map(|(dist, n)| json!({
             "distance": dist, "name": n.name, "kind": n.kind, "file": n.file, "line": n.line,
         })).collect();
-        println!("{}", serde_json::to_string_pretty(&json!({
-            "changed_files": changed,
-            "impacted_count": impacted.len(),
-            "impacted": arr,
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "changed_files": changed,
+                "impacted_count": impacted.len(),
+                "impacted": arr,
+            }))?
+        );
     } else {
-        println!("💥 爆炸半径 — 改动 {} 个文件, 影响 {} 个符号", changed.len(), impacted.len());
+        println!(
+            "💥 爆炸半径 — 改动 {} 个文件, 影响 {} 个符号",
+            changed.len(),
+            impacted.len()
+        );
         println!("   改动: {}", changed.join(", "));
         println!();
         let mut current_dist = 0;

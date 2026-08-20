@@ -5,18 +5,18 @@
 //!
 //! 灵感: codeseek 调用图 + codebase-memory-mcp 死代码/影响分析 + loop-engineering impact.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::collections::{HashMap, HashSet, BTreeMap};
 
 /// 符号节点 — 调用图中的一个函数/方法
 #[derive(Debug, Clone)]
 pub struct SymNode {
     pub name: String,
-    pub kind: String,       // "fn" / "def" / "function" / "func" / "method"
-    pub file: String,       // 相对路径
-    pub line: usize,        // 行号 (1-indexed)
-    pub is_entry: bool,     // 是否入口 (main/pub/export)
-    pub is_test: bool,      // 是否测试函数
+    pub kind: String,   // "fn" / "def" / "function" / "func" / "method"
+    pub file: String,   // 相对路径
+    pub line: usize,    // 行号 (1-indexed)
+    pub is_entry: bool, // 是否入口 (main/pub/export)
+    pub is_test: bool,  // 是否测试函数
 }
 
 /// 调用图
@@ -65,7 +65,8 @@ impl CallGraph {
                     continue; // 只关心可调用的符号
                 }
                 let is_entry = is_entry_point(&item, &rel);
-                let is_test = file_is_test || item.name.starts_with("test_") || item.name.starts_with("Test");
+                let is_test =
+                    file_is_test || item.name.starts_with("test_") || item.name.starts_with("Test");
                 let idx = nodes.len();
                 nodes.push(SymNode {
                     name: item.name.clone(),
@@ -105,10 +106,11 @@ impl CallGraph {
                     continue;
                 }
                 // 找这个符号在 nodes 里的 index
-                let node_idx = match find_symbol_index(&nodes, &name_index, &item.name, &rel, item.line) {
-                    Some(i) => i,
-                    None => continue,
-                };
+                let node_idx =
+                    match find_symbol_index(&nodes, &name_index, &item.name, &rel, item.line) {
+                        Some(i) => i,
+                        None => continue,
+                    };
                 // 算函数体范围
                 let body_len = crate::digest::count_body(&lines, item.line, &item.kind);
                 let body_start = item.line.saturating_sub(1);
@@ -124,12 +126,17 @@ impl CallGraph {
         let mut backward_edges: HashMap<String, Vec<usize>> = HashMap::new();
         for (caller_idx, calls) in forward_edges.iter().enumerate() {
             for (callee_name, _) in calls {
-                backward_edges.entry(callee_name.clone()).or_default().push(caller_idx);
+                backward_edges
+                    .entry(callee_name.clone())
+                    .or_default()
+                    .push(caller_idx);
             }
         }
 
         // 入口索引
-        let entry_indices: Vec<usize> = nodes.iter().enumerate()
+        let entry_indices: Vec<usize> = nodes
+            .iter()
+            .enumerate()
             .filter(|(_, n)| n.is_entry)
             .map(|(i, _)| i)
             .collect();
@@ -177,7 +184,9 @@ impl CallGraph {
         }
 
         // 不可达的非测试符号 = 死代码
-        self.nodes.iter().enumerate()
+        self.nodes
+            .iter()
+            .enumerate()
             .filter(|(idx, node)| !reachable.contains(idx) && !node.is_test)
             .map(|(_, n)| n)
             .collect()
@@ -271,7 +280,10 @@ impl CallGraph {
             }
         }
 
-        result.into_iter().map(|((d, _), idx)| (d, &self.nodes[idx])).collect()
+        result
+            .into_iter()
+            .map(|((d, _), idx)| (d, &self.nodes[idx]))
+            .collect()
     }
 
     /// 统计信息
@@ -282,7 +294,8 @@ impl CallGraph {
 
     /// 查找符号是否存在
     pub fn find_node(&self, symbol: &str) -> Option<&SymNode> {
-        self.name_index.get(symbol)
+        self.name_index
+            .get(symbol)
             .and_then(|indices| indices.first())
             .map(|&i| &self.nodes[i])
     }
@@ -291,7 +304,9 @@ impl CallGraph {
 // ============================== 辅助函数 ==============================
 
 fn rel_path(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).map(|r| r.display().to_string()).unwrap_or_else(|_| p.display().to_string())
+    p.strip_prefix(root)
+        .map(|r| r.display().to_string())
+        .unwrap_or_else(|_| p.display().to_string())
 }
 
 /// 判断是否入口点: main 函数 / pub fn (Rust) / export (JS/TS)
@@ -309,7 +324,14 @@ fn is_entry_point(item: &crate::langparse::CodeItem, file: &str) -> bool {
         return true;
     }
     // Go: 大写开头的函数是导出的 (包外可见 = 入口)
-    if file.ends_with(".go") && item.name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+    if file.ends_with(".go")
+        && item
+            .name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+    {
         return true;
     }
     // Python: __init__ / setup / handle_* 等常见入口模式不强判
@@ -337,5 +359,7 @@ fn find_symbol_index(
     line: usize,
 ) -> Option<usize> {
     // 精确匹配 name + file + line (最可靠)
-    nodes.iter().position(|n| n.name == name && n.file == file && n.line == line)
+    nodes
+        .iter()
+        .position(|n| n.name == name && n.file == file && n.line == line)
 }

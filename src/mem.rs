@@ -37,8 +37,7 @@ fn agent() -> ureq::Agent {
 
 /// 直连失败时：经 `ssh huhu` 本机 curl 127.0.0.1:26670（修 Win/代理拦 26670 痛点）
 fn ssh_host() -> String {
-    std::env::var("RXT_NEBULA_SSH")
-        .unwrap_or_else(|_| "huhu".to_string())
+    std::env::var("RXT_NEBULA_SSH").unwrap_or_else(|_| "huhu".to_string())
 }
 
 fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -69,7 +68,13 @@ fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde
         );
     }
     let s = String::from_utf8_lossy(&out.stdout).to_string();
-    serde_json::from_str(&s).map_err(|e| anyhow::anyhow!("ssh JSON 解析失败: {} — {}", e, s.chars().take(200).collect::<String>()))
+    serde_json::from_str(&s).map_err(|e| {
+        anyhow::anyhow!(
+            "ssh JSON 解析失败: {} — {}",
+            e,
+            s.chars().take(200).collect::<String>()
+        )
+    })
 }
 
 fn get_via_ssh(path: &str) -> anyhow::Result<serde_json::Value> {
@@ -134,9 +139,8 @@ fn get_json(path: &str) -> anyhow::Result<serde_json::Value> {
             if std::env::var("RXT_MEM_NO_SSH").is_ok() {
                 return Err(anyhow::anyhow!("星枢 GET 失败 {} — {}", url, e));
             }
-            get_via_ssh(path).map_err(|e2| {
-                anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2)
-            })
+            get_via_ssh(path)
+                .map_err(|e2| anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2))
         }
     }
 }
@@ -206,11 +210,20 @@ pub fn run_search(query: &str, top_k: usize) -> anyhow::Result<()> {
         }
     }
 
-    let composed = data.get("composed").cloned().unwrap_or(serde_json::Value::Null);
-    let conf = composed.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let composed = data
+        .get("composed")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let conf = composed
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let exec = composed.get("executable").and_then(|v| v.as_bool());
     let engine = data.get("engine").and_then(|v| v.as_str()).unwrap_or("?");
-    let cache = data.get("result_cache_hit").and_then(|v| v.as_bool()).unwrap_or(false);
+    let cache = data
+        .get("result_cache_hit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let est = data
         .get("token_stats")
         .and_then(|t| t.get("pack_est_tokens").or_else(|| t.get("est_tokens")))
@@ -231,7 +244,10 @@ pub fn run_search(query: &str, top_k: usize) -> anyhow::Result<()> {
     if let Some(arr) = data.get("results").and_then(|v| v.as_array()) {
         out(&format!("--- hits: {}", arr.len()));
         for (i, r) in arr.iter().take(top_k).enumerate() {
-            let id = r.get("id").map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+            let id = r
+                .get("id")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into());
             let trust = r.get("trust").and_then(|v| v.as_str()).unwrap_or("?");
             let src = r
                 .get("src")
@@ -241,7 +257,14 @@ pub fn run_search(query: &str, top_k: usize) -> anyhow::Result<()> {
             let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let one = content.replace('\n', " ");
             let short: String = one.chars().take(120).collect();
-            out(&format!("{}. [{}] #{} {} | {}", i + 1, trust, id, src, short));
+            out(&format!(
+                "{}. [{}] #{} {} | {}",
+                i + 1,
+                trust,
+                id,
+                src,
+                short
+            ));
         }
     }
     Ok(())
