@@ -4,6 +4,7 @@ use std::io::{self, Write, BufWriter};
 use crate::signature::{FileSignature, to_utf8_lf};
 use std::collections::BTreeMap;
 use regex::Regex;
+use rayon::prelude::*;
 
 /// 路径感观：用于 `rxt find /dir --name '*.rs'`（query 位当目录）
 fn looks_like_path(s: &str) -> bool {
@@ -173,7 +174,7 @@ pub fn run(
          rxt find /path/to/dir --name '*.rs'\n  \
          rxt find /path/to/dir -n '*.md'   # -n/--name/-name 均可\n  \
          rxt find --stats -p .\n  \
-         rxt --host lab find /home/user --name '*.md'"
+         rxt --host huhu find /home/huhu --name '*.md'"
     )
 }
 
@@ -255,7 +256,7 @@ fn search_content(
     dir: &Path,
     query: &str,
     ext_filter: Option<&str>,
-    context: usize,
+    _context: usize,
     case_sensitive: bool,
     only_count: bool,
     compiled_re: &Option<Regex>,
@@ -265,25 +266,34 @@ fn search_content(
     offset: usize,
 ) -> anyhow::Result<()> {
     let query_lower = query.to_lowercase();
-    let mut results: Vec<(PathBuf, usize, String)> = Vec::new();
-    for_each_file(dir, ext_filter, &mut |path| {
-        if let Ok(raw) = fs::read(path) {
+    let mut files = Vec::new();
+    for_each_file(dir, ext_filter, &mut |path| files.push(path.to_path_buf()));
+    let query_owned = query.to_string();
+    let compiled = compiled_re.clone();
+    let mut results: Vec<(PathBuf, usize, String)> = files
+        .par_iter()
+        .filter_map(|path| {
+            let raw = fs::read(path).ok()?;
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
+            let mut hits = Vec::new();
             for (i, line) in content.lines().enumerate() {
-                let matched = if let Some(ref re) = compiled_re {
+                let matched = if let Some(ref re) = compiled {
                     re.is_match(line)
                 } else if case_sensitive {
-                    line.contains(query)
+                    line.contains(&query_owned)
                 } else {
                     line.to_lowercase().contains(&query_lower)
                 };
                 if matched {
-                    results.push((path.to_path_buf(), i + 1, line.to_string()));
+                    hits.push((path.clone(), i + 1, line.to_string()));
                 }
             }
-        }
-    });
+            if hits.is_empty() { None } else { Some(hits) }
+        })
+        .flatten()
+        .collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     // Apply pagination
     let mut results = results;

@@ -5,16 +5,16 @@
 `rxt` 是一个用 Rust 编写的跨平台命令行工具集。核心理念是**透明远程**：用同一套命令管理本地和远程 Linux/Windows 机器，无需 SSH 进去再敲命令。同时还内置了代码结构分析、目录骨架、调用链追踪等 AI 友好的能力。
 
 ```bash
-# 本地
-rxt ls ~
+# 本地管理
+rxt ls /home/huhu
 rxt ps --top 5
 
-# 远程 — 同一套命令，Linux / Windows 自动适配
-rxt --host lab ls /var/log
-rxt --host winbox ls "C:\Users\you\Desktop"
+# 远程管理 — 一条命令搞定, Windows/Linux 自动适配
+rxt --host xian ls "C:\Users\xiantuer\Desktop"     # 远程 Windows
+rxt --host tuanzi ps --top 5                        # 远程 Linux
 
-# 经跳板机访问不可直连的目标（hosts.toml 里配 jump_host）
-rxt --host winbox tree "C:\temp"
+# 走跳板机访问不可直连的目标
+rxt --host xian tree "C:\temp"                      # 经 jump_host 中转
 ```
 
 ---
@@ -27,9 +27,9 @@ rxt --host winbox tree "C:\temp"
 
 ```bash
 rxt ls <dir>                         # 本地目录列表
-rxt --host lab ls <dir>              # 远程目录列表（Windows/Linux 自动适配）
-rxt --host winbox ps                 # 远程进程列表
-rxt --group all version              # 批量查版本 + 一致性检测
+rxt --host xian ls <dir>             # 远程目录列表（Windows/Linux 自动适配）
+rxt --host tuanzi ps                 # 远程进程列表
+rxt --group all version              # 批量查所有机器 rxt 版本 + 一致性检测
 ```
 
 **跳板机访问（v0.7.3+）**：当目标机无法直连（防火墙隔离 / 仅内网可达 / 外网访问内网），可经跳板机 SSH 隧道中转：
@@ -105,57 +105,47 @@ cargo build --release --target x86_64-pc-windows-gnu
 # 产物: target/x86_64-pc-windows-gnu/release/rxt.exe (PE32+)
 
 # 3. 用 rxt 自己部署到远程（自动检测目标 OS + 二进制格式校验）
-rxt deploy target/release/rxt -t lab
-rxt deploy target/x86_64-pc-windows-gnu/release/rxt.exe -t winbox
-rxt deploy target/release/rxt --all
+rxt deploy target/release/rxt -t tuanzi                              # Linux → Linux (ELF)
+rxt deploy target/x86_64-pc-windows-gnu/release/rxt.exe -t xian      # Linux → Windows (PE)
+rxt deploy target/release/rxt --all                                  # 全部机器
 ```
 
-> **Windows 部署注意**：若目标机有杀毒软件（如 Windows Defender）实时扫描，直接写入固定系统路径的 `.exe` 可能被破坏。推荐部署到 `%USERPROFILE%\rxt.exe` 并把该目录加入 PATH。
+> **Windows 部署注意**：若目标机有杀毒软件（如 Windows Defender）实时扫描，直接写入 `C:\rxt\` 的 `.exe` 可能被破坏。推荐部署到用户目录 `%USERPROFILE%\rxt.exe` 并把 `%USERPROFILE%` 加入 PATH。
 
 ### 远程主机配置
 
-编辑 `~/.rxt/hosts.toml`（密码建议走 `password_env`，值放在 `~/.rxt/env`）：
+编辑 `~/.rxt/hosts.toml`：
 
 ```toml
-# Linux
-[hosts.lab]
-host = "10.0.0.10"
-user = "deploy"
-password_env = "RXT_PASS_LAB"
+# Linux 主机
+[hosts.tuanzi]
+host = "192.168.31.244"
+user = "tuanzi"
+password = "your_password"     # 或用 password_env 引用环境变量
 port = 22
 
-# Windows（可选 os，跳过探测）
-[hosts.winbox]
-os = "windows"
-host = "10.0.0.20"
-user = "you"
+# Windows 主机
+[hosts.xian]
+os = "windows"                 # 可选, 避免每次探测
+host = "192.168.31.169"
+user = "xiantuer"
+password = "your_password"
+port = 22
+jump_host = "huhu"             # 可选, 经跳板机访问 (v0.7.3+)
+
+# 密钥认证
+[hosts.osaka]
+host = "64.176.43.4"
+user = "root"
 key = "~/.ssh/id_ed25519"
 port = 22
-jump_host = "bastion"          # 可选：经跳板机访问 (v0.7.3+)
 
-# 跳板
-[hosts.bastion]
-host = "10.0.0.1"
-user = "jump"
-key = "~/.ssh/id_ed25519"
-
-# 主机组
+# 主机组 (批量操作)
 [group.all]
-members = ["lab", "winbox"]
+members = ["tuanzi", "xian", "osaka"]
 ```
 
-```bash
-# ~/.rxt/env  (chmod 600)
-RXT_PASS_LAB=...
-# 可选：记忆 API / 更新频道 / 一键发布目标
-# RXT_NEBULA_URL=http://127.0.0.1:26670
-# RXT_UPDATE_URL=http://10.0.0.10:26780
-# RXT_PUBLISH_LINUX_HOSTS=lab
-# RXT_PUBLISH_WINDOWS_HOSTS=winbox
-# RXT_PUBLISH_GIT_REMOTES=origin
-```
-
-**认证方式**（优先级）：密钥 (`key`) > `password_env` > 明文 `password`（不推荐）。
+**认证方式**（优先级）：密钥 (`key`) > 密码 (`password`) > 环境变量密码 (`password_env`)。
 
 ---
 
@@ -164,70 +154,57 @@ RXT_PASS_LAB=...
 ### 透明远程管理
 
 ```bash
-# 本地
-rxt ls ~ --depth 2
+# 管理本地
+rxt ls /home/huhu --depth 2
 rxt ps --top 10 --sort cpu
 
-# 远程 Linux
-rxt --host lab ls /var/log
-rxt --host lab exec "docker ps"
-rxt --host lab service --running
+# 管理远程 Linux
+rxt --host tuanzi ls /home/tuanzi
+rxt --host tuanzi exec "docker ps"
+rxt --host tuanzi service --running
 
-# 远程 Windows
-rxt --host winbox ls "C:\Users\you\Desktop"
-rxt --host winbox ps --top 10
-rxt --host winbox net --conn ESTABLISHED
-rxt --host winbox reg --list "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+# 管理远程 Windows
+rxt --host xian ls "C:\Users\xiantuer\Desktop"
+rxt --host xian ps --top 10
+rxt --host xian net --conn ESTABLISHED
+rxt --host xian reg --list "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
 
-# 远程 PowerShell
-rxt exec --host winbox "Get-Service | Where-Object Status -eq Running"
+# 远程执行 PowerShell
+rxt exec --host xian "Get-Service | Where-Object Status -eq Running"
 
-# 批量
-rxt --group all version
-rxt --group all exec "uptime"
+# 批量操作所有机器
+rxt --group all version             # 版本一致性检测
+rxt --group all exec "uptime"       # 全员执行
 ```
 
 ### AI 代码智能
 
 ```bash
-rxt pack . -b 5000                  # 一键项目简报（硬预算，省调用）
 rxt digest ./src/                   # 目录骨架 (省 token)
 rxt refs connect_async --callers    # 谁调用了 connect_async
 rxt refs connect_async --callees    # connect_async 调用了谁
 rxt struct src/remote.rs --functions
-rxt ctx src/main.rs --max-lines 200
-rxt map . --depth 3
+rxt ctx src/main.rs --max-lines 200 # 生成 AI 上下文
+rxt map . --depth 3                 # 项目结构简报
 ```
 
 ### 内联代码执行
 
 ```bash
 rxt exec "docker ps"
-rxt exec "SELECT 1" --lang sql --db postgres
-rxt exec --host lab "docker logs nginx --tail 50"
+rxt exec "SELECT count(*) FROM torrents" --lang sql --db postgres
+rxt exec --host tuanzi "docker logs nginx --tail 50"
 rxt py -c "print(sum(range(100)))"
 ```
 
 ### MCP Server 模式
 
-rxt 可作为 MCP (Model Context Protocol) server 运行，把命令暴露给 AI agent：
+rxt 可作为 MCP (Model Context Protocol) server 运行，把所有命令暴露给 AI agent：
 
 ```bash
-rxt mcp          # stdio JSON-RPC（默认 --slim，省 token）
-rxt mcp --sse    # SSE 模式（若构建启用）
+rxt mcp          # stdio JSON-RPC 模式 (被 ZCode/Hermes/Codex 等调用)
+rxt mcp --sse    # SSE 模式
 ```
-
-### 环境变量速查
-
-| 变量 | 作用 |
-|------|------|
-| `RXT_NEBULA_URL` / `NEBULA_URL` | 记忆 API 地址（默认 `http://127.0.0.1:26670`） |
-| `RXT_NEBULA_SSH` | 记忆直连失败时的 SSH 跳板主机 |
-| `RXT_UPDATE_URL` | 预编译更新频道根 URL（未设则 `update` 报错、自动检查跳过） |
-| `RXT_PUBLISH_LINUX_HOSTS` | `publish` 部署的 Linux 别名（逗号分隔） |
-| `RXT_PUBLISH_WINDOWS_HOSTS` | `publish` 部署的 Windows 别名 |
-| `RXT_PUBLISH_GIT_REMOTES` | `publish` 推送的 git remote（默认 `origin`） |
-| `RXT_AGENT=1` | 管道捕获时写 UTF-8 BOM（防 Windows PowerShell 乱码） |
 
 ---
 
@@ -406,16 +383,26 @@ cargo build --release --no-default-features
 
 | Feature | 默认 | 说明 |
 |---------|------|------|
-| `remote` | ✅ | SSH/SFTP 远程能力（依赖 russh + tokio） |
-| `net` | ✅ | `http` 命令（依赖 ureq） |
-| `xz` | ✅ | `.tar.xz` 解压（依赖 xz2 → liblzma，需 gcc） |
+| `remote` | ✅ | SSH 远程（russh + tokio） |
+| `http` | ✅ | `http` / `mem` / 在线 `qr`（ureq） |
+| `cookies` | ❌ | `--browser` 读本机 Cookie（rookie；Windows 常编不过，用 `--features cookies` 或 `net`） |
+| `net` | ❌ | 兼容旧命令 = `http` + `cookies` |
+| `xz` | ✅ | `.tar.xz` 解压（xz2 → liblzma，需 gcc） |
 | `shellexpand` | ✅* | `~` 路径展开（随 remote 启用） |
 
-关闭默认 feature 可在无 C 工具链的环境编译纯本地版。
+关闭默认 feature 可在无 C 工具链的环境编译纯本地版。Windows 默认即可编；要浏览器 Cookie 再加 `--features cookies`。
 
 ---
 
 ## 📖 版本历史
+
+### v0.9.0 (2026-08-20)
+
+- **`http` / `cookies` 拆分**：默认只开 ureq；rookie 改为可选，Windows 能编过。`--browser` 无 cookies feature 时明确报错。
+- **接上 `rxt search`**：文档里有、clap 里没有的统一搜索（glob 文件名 / 内容）。
+- **去掉未挂接死代码**：`session`（旧 ssh2）、`plugin`、`seek`、`channel_update`、损坏的 `_gen_main.py`。
+- **grep** 不再为判二进制先读全文；**find** 内容搜索走 rayon。
+- **`--text` / `--links`** 正则只编译一次。
 
 ### v0.8.0 (2026-07-10)
 
@@ -449,7 +436,6 @@ cargo build --release --no-default-features
 - **`refs` 双向调用链**：`--callers`（谁调用了它）/ `--callees`（它调用了谁），对标 codeseek
 - **`digest` 目录模式**：目录符号骨架，函数体折叠，省 70% token
 - **`mem` 端点修复**：MCP 调用不再断连（stdout Mutex 包裹 + tools/call 子线程化）
-- **`seek` 语义代码搜索**：调用星枢向量检索
 
 ### v0.6.0 ~ v0.6.1 (2026-07)
 

@@ -1,7 +1,7 @@
 //! version — 批量查询远程机器 rxt 版本 + 一致性检测
 //!
 //! rxt version                    # 本地版本
-//! rxt version --host lab         # 查单台
+//! rxt version --host xian        # 查单台
 //! rxt version --group all        # 批量查所有 + 检测不一致
 
 use crate::hosts::HostsFile;

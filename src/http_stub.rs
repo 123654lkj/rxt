@@ -1,10 +1,32 @@
 //! HTTP 桩 — no-net 编译模式
 //! 完整实现在 http.rs,本桩仅在关闭 net feature 时编译。
 
-pub fn run(_method: &str, _url: &str, _headers: &[String], _data: Option<&str>, _json_body: bool, _auth: Option<&str>, _show_headers: bool, _body_only: bool) -> anyhow::Result<()> {
+use std::path::Path;
+
+pub struct HttpOpts<'a> {
+    pub method: &'a str,
+    pub url: Option<&'a str>,
+    pub headers: &'a [String],
+    pub data: Option<&'a str>,
+    pub json_body: bool,
+    pub auth: Option<&'a str>,
+    pub timeout: u64,
+    pub show_headers: bool,
+    pub body_only: bool,
+    pub output: Option<&'a Path>,
+    pub browser: Option<&'a str>,
+    pub cookie_jar: Option<&'a Path>,
+    pub cookies: &'a [String],
+    pub user_agent: Option<&'a str>,
+    pub text: bool,
+    pub links: bool,
+    pub budget: Option<usize>,
+}
+
+pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {
     anyhow::bail!(
-        "本 rxt 二进制未启用 net 功能(http 命令不可用)。\n\
-         原因: 本地编译时关闭了 `net` feature(避开 ureq→ring→C 编译器依赖)。\n\
-         如需 HTTP 客户端，请用启用 net feature 编译的 rxt。"
+        "本 rxt 二进制未启用 http 功能。\n\
+         编译: cargo build --release --features http\n\
+         读浏览器 Cookie 另加 --features cookies（或 --features net）。"
     )
 }

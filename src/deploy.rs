@@ -60,7 +60,7 @@ pub fn run(
     Ok(())
 }
 
-/// 是否更像用「主机别名」走 OpenSSH config（本机 `ssh <alias>` 可用）
+/// 是否更像用「主机别名」走 OpenSSH config（Win/本机 ssh huhu 可用）
 fn prefer_ssh_alias() -> bool {
     // Windows 上 OpenSSH 常见；有 ssh 且无 bash 时必须走原生
     which("ssh").is_some() && (cfg!(windows) || which("sshpass").is_none())
@@ -178,7 +178,7 @@ fn deploy_to_host(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "rxt".into());
         let kill = format!(
-            r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Stop-Process -Name {} -Force -ErrorAction SilentlyContinue""#,
+            "pwsh -NoProfile -Command \"Stop-Process -Name {} -Force -ErrorAction SilentlyContinue\"",
             exe_name
         );
         let _ = ssh_run(use_native, &target, &config, &password, &kill);
@@ -227,7 +227,7 @@ fn deploy_to_host(
                 .flat_map(|c| c.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
-        format!(r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -EncodedCommand {}"#, b64)
+        format!("pwsh -NoProfile -EncodedCommand {}", b64)
     } else {
         format!(
             "stat -c %s '{}' 2>/dev/null || stat -c %s \"$HOME/.local/bin/rxt\"",

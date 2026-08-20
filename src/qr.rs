@@ -8,7 +8,7 @@
 //!   rxt qr "https://example.com"
 //!   rxt qr "任何文本"
 
-#[cfg(feature = "net")]
+#[cfg(feature = "http")]
 pub fn run(text: &str, _invert: bool, _compact: bool) -> anyhow::Result<()> {
     use std::io::Read;
     if text.trim().is_empty() {
@@ -40,12 +40,12 @@ pub fn run(text: &str, _invert: bool, _compact: bool) -> anyhow::Result<()> {
     }
 }
 
-#[cfg(not(feature = "net"))]
+#[cfg(not(feature = "http"))]
 pub fn run(text: &str, _invert: bool, _compact: bool) -> anyhow::Result<()> {
     if text.trim().is_empty() {
         anyhow::bail!("内容为空");
     }
-    println!("⚠ 本地版(无 net feature)不能在线生成二维码。");
+    println!("⚠ 本地版(无 http feature)不能在线生成二维码。");
     println!("手机浏览器打开以下链接查看:");
     println!("https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={}",
              urlencoding::encode(text));

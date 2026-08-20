@@ -66,7 +66,7 @@ enum Command {
     },
     #[command(
         about = "智能搜索",
-        after_help = "示例:\n  rxt find TODO -p src\n  rxt find /dir --name '*.rs'\n  rxt find /dir -name '*.md'   # GNU 风格 -name 也认\n  rxt --host lab find /home/user --name '*.md'"
+        after_help = "示例:\n  rxt find TODO -p src\n  rxt find /dir --name '*.rs'\n  rxt find /dir -name '*.md'   # GNU 风格 -name 也认\n  rxt --host huhu find /home/huhu --name '*.md'"
     )]
     Find {
         query: Option<String>,
@@ -139,6 +139,19 @@ enum Command {
         #[arg(long, help = "JSONL 流式输出(每行一条 JSON)")] jsonl: bool,
         #[arg(long, help = "不忽略 .git / target / node_modules / vendor / .开头目录")] no_ignore: bool,
     },
+    #[command(
+        about = "统一搜索 — glob 搜文件名，否则搜内容",
+        after_help = "示例:\n  rxt search TODO\n  rxt search \"*.rs\"\n  rxt search \"fn main\" --type rs\n  rxt search --name \"*.toml\"\n  rxt search --content TODO"
+    )]
+    Search {
+        query: String,
+        #[arg(short, long, help = "搜索根目录")] path: Option<String>,
+        #[arg(short = 't', long = "type", help = "扩展名，逗号分隔")] file_type: Option<String>,
+        #[arg(long, help = "强制按文件名 glob")] name: bool,
+        #[arg(long, help = "强制搜内容")] content: bool,
+        #[arg(long)] json: bool,
+        #[arg(long, default_value_t = 200, help = "最大结果数")] max_results: usize,
+    },
     #[command(about = "执行内联 Python")]
     Py { code: Option<String>, #[arg(short, long)] file: Option<PathBuf> },
     #[command(about = "星枢记忆")]
@@ -186,17 +199,25 @@ enum Command {
         #[arg(short = 'd', long = "depth", help = "递归深度")] depth: Option<usize>,
         #[arg(long, help = "限制最大结果数")] max: Option<usize>,
     },
-    #[command(about = "HTTP 客户端")]
+    #[command(about = "HTTP 客户端 — 浏览网页/取资源/读本机浏览器 Cookie")]
     Http {
         #[arg(default_value = "GET")] method: String,
-        url: String,
+        #[arg(value_name = "URL")] url: Option<String>,
         #[arg(short = 'H', long = "header", help = "header: value")] headers: Vec<String>,
         #[arg(short = 'd', long = "data")] data: Option<String>,
-        #[arg(short = 'j', long = "json", help = "request body is JSON")] json_body: bool,
+        #[arg(short = 'j', long = "json", help = "request body is JSON；cookies 子命令则输出 JSON")] json_body: bool,
         #[arg(long, help = "basic auth: user:pass")] auth: Option<String>,
         #[arg(short = 't', long = "timeout", default_value = "30")] timeout: u64,
         #[arg(short = 'i', long = "headers", help = "show response headers")] show_headers: bool,
         #[arg(short = 'b', long = "body-only")] body_only: bool,
+        #[arg(short = 'o', long = "output", help = "把响应体写到文件")] output: Option<PathBuf>,
+        #[arg(long, help = "从本机浏览器导入 Cookie: chrome|edge|firefox|brave|auto（需 cookies feature；Chrome 127+ 可能要管理员；值不进日志）")] browser: Option<String>,
+        #[arg(long = "cookie-jar", help = "Netscape Cookie 罐（请求前加载、响应后写回）")] cookie_jar: Option<PathBuf>,
+        #[arg(long = "cookie", help = "额外 Cookie: name=value（可重复，或 a=1; b=2）")] cookies: Vec<String>,
+        #[arg(long = "ua", alias = "user-agent", help = "User-Agent（默认 Chrome）")] user_agent: Option<String>,
+        #[arg(long, help = "HTML 抽成可读正文")] text: bool,
+        #[arg(long, help = "提取页面链接")] links: bool,
+        #[arg(long, help = "限制打印的正文字符数")] budget: Option<usize>,
     },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
@@ -435,11 +456,6 @@ enum Command {
         #[arg(long, help = "指定 feature")] features: Option<String>,
         #[arg(long, help = "只 pull 不编译")] no_build: bool,
     },
-    #[command(about = "从更新频道安装预编译二进制（需 RXT_UPDATE_URL）")]
-    Update {
-        #[arg(long, help = "只检查不安装")] check: bool,
-        #[arg(long, help = "忽略节流强制检查")] force: bool,
-    },
     #[command(about = "HTTP 文件服务器 — 手机扫码秒访问")]
     Serve {
         dir: Option<String>,
@@ -600,11 +616,11 @@ mod replace; mod read; mod write; mod cat; mod jsonl; mod stat;
 mod find;
 #[path = "struct.rs"]
 mod struct_mod;
-mod diff; mod dep; mod sed; mod grep; mod patch; mod tree;
-mod py; #[cfg(feature="net")] mod mem; #[cfg(not(feature="net"))] #[path="mem_stub.rs"] mod mem;  mod jq;
+mod diff; mod dep; mod sed; mod grep; mod search; mod patch; mod tree;
+mod py; #[cfg(feature="http")] mod mem; #[cfg(not(feature="http"))] #[path="mem_stub.rs"] mod mem;  mod jq;
 mod unzip;
 mod ls;
-#[cfg(feature="net")] mod http; #[cfg(not(feature="net"))] #[path="http_stub.rs"] mod http; mod edit; mod hash;
+#[cfg(feature="http")] mod http; #[cfg(not(feature="http"))] #[path="http_stub.rs"] mod http; mod edit; mod hash;
 mod uuidgen; mod enc; mod watch;
 mod tail;
 mod describe; mod timecmd; mod exec;
@@ -637,8 +653,6 @@ mod reg;
 mod net;
 // 高效工具族 (v0.4.0+)
 mod upgrade;
-#[cfg(feature = "net")]
-mod channel_update;
 mod deploy;
 mod version;
 mod sync;
@@ -676,9 +690,6 @@ fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
     // password_env：从 ~/.rxt/env 注入（Agent/非登录壳也能用）
     let _ = crate::hosts::HostsFile::load_dotenv();
-    // 局域网频道自动更新（节流；RXT_UPDATE_AUTO=0 关闭）
-    #[cfg(feature = "net")]
-    crate::channel_update::auto_check_on_start();
 
     // Handle --describe before clap parses (since --describe needs to be a top-level flag,
     // and adding it to Cli struct requires changes).
@@ -835,6 +846,9 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             }
             grep::run(&pattern, &path, context, file_type.as_deref(), count, invert, json, regex, max_results, head, offset, jsonl, no_ignore, None)?;
         }
+        Command::Search { query, path, file_type, name, content, json, max_results } => {
+            search::run(&query, path.as_deref(), file_type.as_deref(), name, content, json, max_results)?;
+        }
         Command::Patch { paths, reverse, check, output } => {
             patch::run(&paths, reverse, check, output.as_deref())?;
         }
@@ -889,7 +903,25 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             }
             ls::run(&dir, json, all, sort.as_deref(), depth, max, None)?
         }
-        Command::Http { method, url, headers, data, json_body, auth, timeout: _, show_headers, body_only } => http::run(&method, &url, &headers, data.as_deref(), json_body, auth.as_deref(), show_headers, body_only)?,
+        Command::Http { method, url, headers, data, json_body, auth, timeout, show_headers, body_only, output, browser, cookie_jar, cookies, user_agent, text, links, budget } => http::run(http::HttpOpts {
+            method: &method,
+            url: url.as_deref(),
+            headers: &headers,
+            data: data.as_deref(),
+            json_body,
+            auth: auth.as_deref(),
+            timeout,
+            show_headers,
+            body_only,
+            output: output.as_deref(),
+            browser: browser.as_deref(),
+            cookie_jar: cookie_jar.as_deref(),
+            cookies: &cookies,
+            user_agent: user_agent.as_deref(),
+            text,
+            links,
+            budget,
+        })?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
                 let mut p = s.splitn(2, ',');
@@ -1104,17 +1136,8 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Net { conn, resolve, route, port, json } => {
             net::run(conn.as_deref(), resolve.as_deref(), route, port.as_deref(), json, remote.as_ref().map(|r| &**r))?;
         }
-                Command::Upgrade { repo, check, features, no_build } => {
+        Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;
-        }
-        #[cfg(feature = "net")]
-        Command::Update { check, force } => {
-            let _ = force;
-            channel_update::run(check, force)?;
-        }
-        #[cfg(not(feature = "net"))]
-        Command::Update { .. } => {
-            anyhow::bail!("rxt update 需要 net feature");
         }
         // Deploy/Version/Sync 在 main() 前置处理, 不会到达这里
         Command::Deploy { .. } | Command::Version { .. } | Command::Sync { .. } => unreachable!(),

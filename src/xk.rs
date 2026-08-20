@@ -1,11 +1,12 @@
 //! 星控浏览器控制 — rxt 集成模块
 //!
-//! - --host 远程模式：SSH 到目标机，用 curl 调远端 xkd
-//! - snapshot 精简输出：默认只返回 refs 列表，AI 友好
-//! - screenshot：--save 存到下载目录
-//! - cookies 导出/导入：--export-cookies / --inject
-//! - Chrome headless：--start-chrome（路径用 $HOME，可用 RXT_XK_* 覆盖）
-//! - UA 伪装：inject 自动隐藏 HeadlessChrome
+//! 解决的坑：
+//! 1. --host 远程模式：SSH 到虎虎，用 curl 调远程 xkd
+//! 2. snapshot 精简输出：默认只返回 refs 列表，AI 友好
+//! 3. screenshot 存文件：--save 参数存到下载目录
+//! 4. cookies 导出/导入：--export-cookies / --inject 命令
+//! 5. Chrome headless 启动：--start-chrome 命令（在远程主机上启动 headless Chrome）
+//! 6. UA 伪装：inject 命令自动隐藏 HeadlessChrome
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -303,46 +304,14 @@ pub fn run(
 }
 
 /// 在远程主机上启动 headless Chrome + xkd
-///
-/// 远端路径默认相对 `$HOME`，可用环境变量覆盖（会随 ssh 传入远端）:
-/// - `RXT_XK_USER_DATA`  Chrome user-data-dir（默认 `$HOME/xingkong-chrome`）
-/// - `RXT_XK_CRATES`     xkd 仓库路径（默认 `$HOME/xingkong-crates`）
-/// - `RXT_XK_PORT`       xkd 端口（默认 26800）
 fn start_headless_chrome(host: &str) -> Result<()> {
-    let script = r#"
-set -e
-HOME_DIR="${HOME:-/tmp}"
-UD="${RXT_XK_USER_DATA:-$HOME_DIR/xingkong-chrome}"
-CRATES="${RXT_XK_CRATES:-$HOME_DIR/xingkong-crates}"
-PORT="${RXT_XK_PORT:-26800}"
-LOG_CHROME="${HOME_DIR}/xk-chrome.log"
-LOG_DAEMON="${HOME_DIR}/xk-daemon.log"
-mkdir -p "$UD"
-pkill -f 'xingkong-chrome' 2>/dev/null || true
-pkill -f 'xkd' 2>/dev/null || true
-sleep 1
-rm -f "$UD/SingletonLock"
-google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
-  --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 \
-  --remote-allow-origins=* --user-data-dir="$UD" --window-size=1920,1080 \
-  --disable-blink-features=AutomationControlled --no-first-run --disable-popup-blocking \
-  about:blank &>"$LOG_CHROME" &
-sleep 3
-WS_URL=$(curl -s http://127.0.0.1:9222/json/version | python3 -c 'import json,sys; print(json.load(sys.stdin)["webSocketDebuggerUrl"])')
-cd "$CRATES" && ./target/release/xkd --port "$PORT" --cdp-url "$WS_URL" &>"$LOG_DAEMON" &
-sleep 2
-curl -s "http://127.0.0.1:${PORT}/status"
-"#;
+    let script = r#"pkill -f 'xingkong-chrome' 2>/dev/null; pkill -f 'xkd' 2>/dev/null; sleep 1; rm -f /home/huhu/xingkong-chrome/SingletonLock; google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins=* --user-data-dir=/home/huhu/xingkong-chrome --window-size=1920,1080 --disable-blink-features=AutomationControlled --no-first-run --disable-popup-blocking about:blank &>/home/huhu/xk-chrome.log & sleep 3; WS_URL=$(curl -s http://127.0.0.1:9222/json/version | python3 -c 'import json,sys; print(json.load(sys.stdin)["webSocketDebuggerUrl"])'); cd /home/huhu/xingkong-crates && ./target/release/xkd --port 26800 --cdp-url "$WS_URL" &>/home/huhu/xk-daemon.log & sleep 2; curl -s http://127.0.0.1:26800/status"#;
 
-    let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.args(["exec", "--host", host]).arg(script);
-    // 把本地覆盖项透传进远端 shell（若已 export）
-    for key in ["RXT_XK_USER_DATA", "RXT_XK_CRATES", "RXT_XK_PORT"] {
-        if let Ok(v) = std::env::var(key) {
-            cmd.env(key, v);
-        }
-    }
-    let output = cmd.output().context("远程执行失败")?;
+    let output = Command::new(std::env::current_exe()?)
+        .args(["exec", "--host", host])
+        .arg(script)
+        .output()
+        .context("远程执行失败")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("Chrome + daemon 启动:");

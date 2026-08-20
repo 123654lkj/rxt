@@ -74,9 +74,8 @@ pub fn run(json_output: bool) -> anyhow::Result<()> {
         "nebula": {
             "url_env": std::env::var("RXT_NEBULA_URL").or_else(|_| std::env::var("NEBULA_URL")).ok(),
             "ssh_env": std::env::var("RXT_NEBULA_SSH").ok(),
-            "default_url": "http://127.0.0.1:26670",
-            "default_ssh": null,
-            "update_url_env": std::env::var("RXT_UPDATE_URL").ok(),
+            "default_url": "http://192.168.31.252:26670",
+            "default_ssh": "huhu",
         },
         "features": {
             "remote": true,

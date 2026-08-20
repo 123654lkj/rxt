@@ -32,15 +32,7 @@ mod imp {
         }
     }
 
-    /// Windows 上可用的 PowerShell 可执行文件。
-    /// 优先用系统自带的 Windows PowerShell 5.1 全路径，避免：
-    /// 1) 未安装 PowerShell 7 时 `pwsh` 不存在
-    /// 2) PATH 被 PS7 坏 shim 劫持（`powershell` 指向缺失的 pwsh.dll）
-    fn win_powershell() -> &'static str {
-        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    }
-
-    /// Windows PowerShell 路径参数转义（单引号）
+    /// Windows pwsh path escape
     fn shell_path_win(path: &Path) -> String {
         let s = path.to_string_lossy().replace('/', "\\");
         format!("'{}'", s.replace("'", "''"))
@@ -224,9 +216,6 @@ mod imp {
         /// 分离 stdout/stderr 执行。返回 (stdout, stderr, exit_code)。
         /// v0.4.3: 修复 base64 解析被 stderr 污染的问题 —— 之前 exec 把 stderr 合并进 output,
         /// 导致 read_file 的 base64 输出混入 locale 警告解码失败。
-        /// v0.8.8: 不再在 Eof 时提前 break。Windows OpenSSH 常见顺序是
-        /// Data/ExtData → Eof → ExitStatus → Close；若在 Eof 就退出会丢真实 exit code，
-        /// 导致 write_file/exec 把失败当成功（exit 恒为 0）。
         pub fn exec_sep(&self, cmd: &str) -> anyhow::Result<(String, String, i32)> {
             let cmd = self.wrap_cmd(cmd);
             self.rt.block_on(async {
@@ -248,9 +237,7 @@ mod imp {
                         ChannelMsg::ExitStatus { exit_status } => {
                             exit_code = exit_status as i32;
                         }
-                        // Eof 只表示对端不再写数据，仍需等 ExitStatus / Close
-                        ChannelMsg::Eof => {}
-                        ChannelMsg::Close => break,
+                        ChannelMsg::Eof | ChannelMsg::Close => break,
                         _ => {}
                     }
                 }
@@ -263,8 +250,7 @@ mod imp {
             match self.os {
                 RemoteOs::Windows => {
                     let p = shell_path_win(path);
-                    let ps = win_powershell();
-                    let cmd = format!("{} -NoProfile -Command \"[Convert]::ToBase64String([IO.File]::ReadAllBytes({}))\"", ps, p);
+                    let cmd = format!("pwsh -NoProfile -Command \"[Convert]::ToBase64String([IO.File]::ReadAllBytes({}))\"", p);
                     let (stdout, stderr, exit) = self.exec_sep(&cmd)?;
                     if exit != 0 { anyhow::bail!("read_file (win) exit {}: {}", exit, stderr.trim()); }
                     let cleaned: String = stdout.chars().filter(|c| !c.is_whitespace()).collect();
@@ -311,10 +297,9 @@ mod imp {
                         "."
                     };
                     let parent = shell_path_win(std::path::Path::new(parent_str));
-                    let ps = win_powershell();
                     let cmd = format!(
-                        "{} -NoProfile -Command \"[IO.Directory]::CreateDirectory({}); [IO.File]::WriteAllBytes({}, [Convert]::FromBase64String(\'{}\'))\"",
-                        ps, parent, p, b64
+                        "pwsh -NoProfile -Command \"[IO.Directory]::CreateDirectory({}); [IO.File]::WriteAllBytes({}, [Convert]::FromBase64String(\'{}\'))\"",
+                        parent, p, b64
                     );
                     let (_out, err, exit) = self.exec_sep(&cmd)?;
                     if exit != 0 { anyhow::bail!("write_file (win) exit {}: {}", exit, err.trim()); }
@@ -375,15 +360,14 @@ mod imp {
                 RemoteOs::Windows => {
                     // PowerShell: 查 PATH → 用户目录 → C:\rxt (复用 version.rs 验证过的逻辑)
                     use base64::Engine;
-                    let script = "$r = Get-Command rxt -ErrorAction SilentlyContinue; \
+                    let ps = "$r = Get-Command rxt -ErrorAction SilentlyContinue; \
                               if (-not $r) { $r = Get-Item \"$env:USERPROFILE\\rxt.exe\" -ErrorAction SilentlyContinue }; \
                               if (-not $r) { $r = Get-Item \"C:\\rxt\\rxt.exe\" -ErrorAction SilentlyContinue }; \
                               if ($r) { $r.FullName } else { '' }";
                     let b64 = base64::engine::general_purpose::STANDARD.encode(
-                        script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
+                        ps.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>()
                     );
-                    let ps = win_powershell();
-                    let out = self.exec(&format!("{} -NoProfile -EncodedCommand {}", ps, b64)).unwrap_or_default();
+                    let out = self.exec(&format!("pwsh -NoProfile -EncodedCommand {}", b64)).unwrap_or_default();
                     let trimmed = out.trim();
                     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
                 }

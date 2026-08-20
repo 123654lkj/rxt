@@ -1,17 +1,21 @@
 [package]
 name = "rxt"
-version = "0.8.9"
+version = "0.9.0"
 edition = "2021"
 
 [features]
-default = ["remote", "xz", "net"]
+default = ["remote", "xz", "http"]
 # 远程 SSH/SFTP 能力。v0.4.2: 从 ssh2(→OpenSSL,Windows编译困难) 改用 russh(纯 Rust)。
 # 彻底摆脱 OpenSSL/perl 依赖, 本地无 C 工具链也能编译 remote feature。
 remote = ["russh", "tokio", "shellexpand"]
 # .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
 xz = ["xz2"]
-# HTTP 客户端 + 记忆 API (ureq → ring → C 编译器)。本地无 gcc 时关掉此 feature。
-net = ["ureq"]
+# HTTP 客户端 + 星枢 mem（ureq）。Windows 默认可编。
+http = ["ureq"]
+# 读本机浏览器 Cookie（rookie/libesedb，Windows 常编不过）。
+cookies = ["http", "rookie"]
+# 旧编译命令兼容：http + cookies
+net = ["http", "cookies"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -31,6 +35,7 @@ notify = "7"
 dirs = "5"
 shellexpand = { version = "3", optional = true }
 ureq = { version = "3.3.0", features = ["json"], optional = true }
+rookie = { version = "0.5.6", optional = true }
 rayon = "1"
 regex = "1"
 libc = "0.2"

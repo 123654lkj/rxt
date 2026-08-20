@@ -8,7 +8,7 @@
 //!   rxt pack ./backend --budget 4000
 //!   rxt pack . --focus poster -d 2
 //!   rxt pack . --json
-//!   rxt --host lab pack /home/user/my-project
+//!   rxt --host huhu pack /home/huhu/torrent-panel-v2
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};

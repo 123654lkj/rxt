@@ -86,12 +86,6 @@ pub fn run(
                     if let Some(ext) = ext_filter {
                         if p.extension().and_then(|e| e.to_str()) != Some(ext) { continue; }
                     }
-                    // Skip binary files (null byte ratio > 5% in first 8KB)
-                    if let Ok(bytes) = fs::read(&p) {
-                        let sample = bytes.len().min(8192);
-                        let nulls = bytes[..sample].iter().filter(|&&b| b == 0).count();
-                        if nulls * 20 > sample { continue; }
-                    }
                     files.push(p);
                 }
             }
@@ -107,6 +101,9 @@ pub fn run(
         files.par_iter()
             .filter_map(|p| {
                 let raw = fs::read(p).ok()?;
+                let sample = raw.len().min(8192);
+                let nulls = raw[..sample].iter().filter(|&&b| b == 0).count();
+                if sample > 0 && nulls * 20 > sample { return None; }
                 let sig = FileSignature::detect(&raw);
                 let content = to_utf8_lf(&raw, &sig);
                 let display = p.strip_prefix(path).unwrap_or(p).to_string_lossy().to_string();
