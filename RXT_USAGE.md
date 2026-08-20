@@ -257,6 +257,8 @@ rxt ps --host huhu --top 5          # 远程查看
 | `snapshot` | 文件快照+回滚 | `rxt snapshot --label "before-fix"` |
 | `repeat` | 轮询重试 | `rxt repeat --port 5432 --timeout 30` |
 | `upgrade` | 自我更新 | `rxt upgrade` / `rxt upgrade --check` |
+| `plugin` | Git 风格外挂注册 | `rxt plugin list` / `rxt plugin install <exe>` |
+| `sign` | Windows 代码签名 | `rxt sign` / `rxt sign --trust` |
 | `map` | 项目结构简报 | `rxt map --depth 2` |
 
 #### http 详解
@@ -278,10 +280,15 @@ rxt http GET url --cookie "sid=abc; theme=dark"   # 额外 Cookie
 rxt http cookies --browser chrome                 # 按域统计
 rxt http cookies --browser chrome github.com      # 导出某域 Cookie（含值）
 rxt http cookies --browser firefox github.com -j --cookie-jar cookies.txt
+rxt http cli https://example.com                  # 把页面收成 rxt 命令（表单+链接，无 JS）
+rxt http forms https://example.com -j             # 只列 <form>
+rxt http POST https://example.com/login --form user=a --form pass=b --cookie-jar jar.txt
 rxt http --host huhu GET http://localhost:8650/sse  # 远程HTTP
 ```
 
 Chrome 127+ 的 App-Bound Encryption 可能需要**管理员**运行 rxt；失败就换 `--browser firefox` 或浏览器导出 Netscape 到 `--cookie-jar`。Cookie 是登录态，别写进笔记/星枢。
+
+`cli` / `forms` **不跑无头浏览器**：只解析服务端 HTML。SPA 请从浏览器 Network 抄 API，再用 `rxt http GET/POST`。
 
 #### tail 详解
 
@@ -500,3 +507,35 @@ rxt trash --purge                  # 清空回收站
 - feature：默认 `http`（ureq）；`--browser` 需 `--features cookies` 或 `--features net`
 - grep 去掉双重全文读；find 内容搜索并行
 - Cookie 值不进日志；Chrome 127+ 读 Cookie 可能要管理员
+- **插件**：未知子命令先 `~/.rxt/plugins/<name>/`，再 PATH 上的 `rxt-<name>`；同名不覆盖内置，除非 `rxt plugin install --force`
+- **Windows 签名**：`rxt sign` 用本机自签 `CN=rxt-codesign`；`rxt build`、`upgrade`、插件安装后自动签。仍被 WDAC 拦时把 `~/.rxt/rxt-codesign.cer` 加进代码完整性签名者（策略级，不是再编一遍）
+
+#### plugin / 外挂
+
+未知子命令按 Git 风格注册，不把内置命令拆成独立二进制。
+
+```bash
+rxt plugin list                     # 内置名 + 已安装 + PATH 上的 rxt-*
+rxt plugin install C:\tools\foo.exe # 拷到 ~/.rxt/plugins/<name>/
+rxt plugin install .\foo.exe --name bar --force  # 覆盖同名内置
+rxt plugin which foo
+rxt plugin remove foo
+rxt foo --help                      # 调度 ~/.rxt/plugins/foo 或 PATH 上 rxt-foo
+```
+
+插件收到 `rxt <name>` 后面的参数；若带了全局 `--host` / `--group`，写入环境变量 `RXT_HOST` / `RXT_GROUP`。
+
+#### sign（Windows）
+
+本机没有买来的代码签名证书时：生成自签 `CN=rxt-codesign` → Authenticode 签 `rxt.exe`（和外挂）→ `rxt sign --trust` 导入 TrustedPublisher。
+
+```bash
+rxt sign                            # 签当前 exe，导出 ~/.rxt/rxt-codesign.cer
+rxt sign --trust                    # 再导入 TrustedPublisher（可能要管理员）
+rxt sign C:\path\plugin.exe
+rxt sign target\release\rxt.exe --trust  # 用旧 rxt 签新构建
+```
+
+`rxt build` 在 Windows 会自动签最终 exe；`upgrade` 替换后、`plugin install` 安装后也会签。原生 `cargo build` 不会调用 rxt：第一次若新 exe 已被 4551 拦截，用仍能运行的旧 rxt 执行上面的显式路径命令。
+
+测：`Get-AuthenticodeSignature` 为 `Valid` 或 `UnknownError`（自签未进根存常见）。WDAC 仍报「应用程序控制策略已阻止此文件」时，把 cer 加进 WDAC 签名者规则，rxt 改不了组策略。

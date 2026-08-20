@@ -21,6 +21,7 @@ pub struct HttpOpts<'a> {
     pub text: bool,
     pub links: bool,
     pub budget: Option<usize>,
+    pub form: &'a [String],
 }
 
 pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {

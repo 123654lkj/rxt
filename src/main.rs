@@ -2,7 +2,12 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "rxt", version, about = "Rust Codex Tools - AI's Cross-Platform IDE")]
+#[command(
+    name = "rxt",
+    version,
+    about = "Rust Codex Tools - AI's Cross-Platform IDE",
+    allow_external_subcommands = true
+)]
 pub(crate) struct Cli {
     #[arg(long, global = true, help = "远程主机（从 ~/.rxt/hosts.toml 读取）")]
     host: Option<String>,
@@ -199,13 +204,13 @@ enum Command {
         #[arg(short = 'd', long = "depth", help = "递归深度")] depth: Option<usize>,
         #[arg(long, help = "限制最大结果数")] max: Option<usize>,
     },
-    #[command(about = "HTTP 客户端 — 浏览网页/取资源/读本机浏览器 Cookie")]
+    #[command(about = "HTTP 客户端 — 网页包装成 CLI（forms/cli），不走无头浏览器")]
     Http {
         #[arg(default_value = "GET")] method: String,
         #[arg(value_name = "URL")] url: Option<String>,
         #[arg(short = 'H', long = "header", help = "header: value")] headers: Vec<String>,
         #[arg(short = 'd', long = "data")] data: Option<String>,
-        #[arg(short = 'j', long = "json", help = "request body is JSON；cookies 子命令则输出 JSON")] json_body: bool,
+        #[arg(short = 'j', long = "json", help = "request body is JSON；cookies/forms/cli 则输出 JSON")] json_body: bool,
         #[arg(long, help = "basic auth: user:pass")] auth: Option<String>,
         #[arg(short = 't', long = "timeout", default_value = "30")] timeout: u64,
         #[arg(short = 'i', long = "headers", help = "show response headers")] show_headers: bool,
@@ -218,6 +223,7 @@ enum Command {
         #[arg(long, help = "HTML 抽成可读正文")] text: bool,
         #[arg(long, help = "提取页面链接")] links: bool,
         #[arg(long, help = "限制打印的正文字符数")] budget: Option<usize>,
+        #[arg(long = "form", help = "表单字段 name=value（可重复，包装网页提交）")] form: Vec<String>,
     },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
@@ -558,6 +564,28 @@ enum Command {
         #[arg(long, default_value_t = true, help = "精简工具集 pack/map/digest/refs/grep/read/write/cat/find/impact/ls/ctx")]
         slim: bool,
     },
+    #[command(about = "外挂插件 — Git 风格注册到 rxt")]
+    Plugin {
+        #[arg(help = "list | install | remove | which", default_value = "list")]
+        action: String,
+        #[arg(help = "install 的路径，或 remove/which 的插件名")]
+        target: Option<String>,
+        #[arg(long, help = "install 时指定名称")]
+        name: Option<String>,
+        #[arg(long, help = "允许覆盖同名内置命令")]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Windows 代码签名（自签 rxt-codesign）")]
+    Sign {
+        #[arg(help = "要签的 exe（默认当前 rxt）")]
+        exe: Option<PathBuf>,
+        #[arg(long, help = "导入 TrustedPublisher（可能要管理员）")]
+        trust: bool,
+    },
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(Subcommand, Clone)]
@@ -669,6 +697,8 @@ mod bench;
 mod watch_run;
 mod evolve;
 mod mcp;
+mod plugin;
+mod sign;
 
 /// GNU find 兼容：`-name`/`-type`/`-path` → clap long flag（仅 find 子命令上下文）
 fn normalize_gnu_find_flags(args: &mut [String]) {
@@ -686,6 +716,25 @@ fn normalize_gnu_find_flags(args: &mut [String]) {
     }
 }
 
+/// clap 在 Windows debug 构建里生成大量子命令时会吃掉主线程默认栈。
+/// 只把解析放到大栈线程，业务命令仍在主线程执行。
+fn parse_cli(args: Vec<String>) -> anyhow::Result<Result<Cli, clap::Error>> {
+    #[cfg(windows)]
+    {
+        return std::thread::Builder::new()
+            .name("rxt-clap".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || Cli::try_parse_from(args))
+            .map_err(|e| anyhow::anyhow!("启动 CLI 解析线程失败: {e}"))?
+            .join()
+            .map_err(|_| anyhow::anyhow!("CLI 解析线程异常退出"));
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Cli::try_parse_from(args))
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     crate::common::setup_utf8_console();
     // password_env：从 ~/.rxt/env 注入（Agent/非登录壳也能用）
@@ -695,12 +744,33 @@ fn main() -> anyhow::Result<()> {
     // and adding it to Cli struct requires changes).
     // Use raw arg parsing for this.
     let mut args: Vec<String> = std::env::args().collect();
+    // 少数包装会把 exe 路径再塞进 argv[1]
+    if args.len() >= 2 && args[1] == args[0] {
+        args.remove(1);
+    }
     if args.iter().any(|a| a == "--describe") {
         return describe::run();
     }
     normalize_gnu_find_flags(&mut args);
 
-    let cli = Cli::parse_from(&args);
+    let raw_host = plugin::peek_flag(&args, "--host");
+    let raw_group = plugin::peek_flag(&args, "--group");
+    if let Some((name, rest)) = plugin::peek_subcommand(&args) {
+        let rest = plugin::strip_global_flags(&rest);
+        if plugin::run_forced_override(
+            &name,
+            &rest,
+            raw_host.as_deref(),
+            raw_group.as_deref(),
+        )? {
+            return Ok(());
+        }
+    }
+
+    let cli = match parse_cli(args)? {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
     
     // v0.4.2: Deploy/Version 有自己的 group 逻辑，不走全局批量拦截
     match &cli.command {
@@ -720,6 +790,30 @@ fn main() -> anyhow::Result<()> {
                 return version::run_remote(h, false);
             }
             return version::run_local();
+        }
+        Command::Plugin { action, target, name, force, json } => {
+            let path = if action == "install" || action == "add" {
+                target.as_ref().map(PathBuf::from)
+            } else {
+                None
+            };
+            let n = if action == "install" || action == "add" {
+                name.clone()
+            } else {
+                target.clone().or(name.clone())
+            };
+            return plugin::run(action, n.as_deref(), path.as_deref(), *force, *json);
+        }
+        Command::Sign { exe, trust } => {
+            return sign::run(exe.as_deref(), *trust);
+        }
+        Command::External(args) => {
+            let args = plugin::strip_global_flags(args);
+            return plugin::run_external(
+                &args,
+                cli.host.as_deref().or(raw_host.as_deref()),
+                cli.group.as_deref().or(raw_group.as_deref()),
+            );
         }
         _ => {}
     }
@@ -903,7 +997,7 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             }
             ls::run(&dir, json, all, sort.as_deref(), depth, max, None)?
         }
-        Command::Http { method, url, headers, data, json_body, auth, timeout, show_headers, body_only, output, browser, cookie_jar, cookies, user_agent, text, links, budget } => http::run(http::HttpOpts {
+        Command::Http { method, url, headers, data, json_body, auth, timeout, show_headers, body_only, output, browser, cookie_jar, cookies, user_agent, text, links, budget, form } => http::run(http::HttpOpts {
             method: &method,
             url: url.as_deref(),
             headers: &headers,
@@ -921,6 +1015,7 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
             text,
             links,
             budget,
+            form: &form,
         })?,
         Command::Edit { path, after, before, delete, replace, content, preview, script, line_range, regex } => {
             let rep = replace.as_deref().and_then(|s| {
@@ -1139,8 +1234,13 @@ fn execute_command(cmd: Command, mut remote: Option<&mut crate::remote::RemoteCh
         Command::Upgrade { repo, check, features, no_build } => {
             upgrade::run(repo.as_deref(), check, features.as_deref(), no_build)?;
         }
-        // Deploy/Version/Sync 在 main() 前置处理, 不会到达这里
-        Command::Deploy { .. } | Command::Version { .. } | Command::Sync { .. } => unreachable!(),
+        // Deploy/Version/Sync/Plugin/Sign/External 在 main() 前置处理, 不会到达这里
+        Command::Deploy { .. }
+        | Command::Version { .. }
+        | Command::Sync { .. }
+        | Command::Plugin { .. }
+        | Command::Sign { .. }
+        | Command::External(_) => unreachable!(),
         Command::Serve { dir, port, no_qr } => {
             serve::run(dir.as_deref(), port, no_qr)?;
         }

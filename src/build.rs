@@ -96,11 +96,35 @@ pub fn run(
     println!();
     println!("  ✓ build finished in {:.1}s", elapsed.as_secs_f64());
 
-    let target_dir = root.join("target").join(target).join(profile);
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { root.join(p) })
+        .unwrap_or_else(|| root.join("target"));
+    let target_dir = target_root.join(target).join(profile);
     if target_dir.exists() {
+        #[cfg(windows)]
+        sign_binaries(&target_dir, bin)?;
         show_binaries(&target_dir, bin);
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sign_binaries(dir: &Path, filter: Option<&str>) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let p = entry?.path();
+        if !p.is_file() || p.extension().and_then(|v| v.to_str()) != Some("exe") {
+            continue;
+        }
+        let name = p.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        if let Some(f) = filter {
+            if !name.contains(f) && name != f && !name.starts_with(f) {
+                continue;
+            }
+        }
+        crate::sign::sign_path(&p, false)?;
+    }
     Ok(())
 }
 

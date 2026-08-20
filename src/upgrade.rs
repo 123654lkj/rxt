@@ -96,7 +96,11 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
 
     // 5. 定位产物
     let exe_name = if cfg!(windows) { "rxt.exe" } else { "rxt" };
-    let built = repo_path.join("target/release").join(exe_name);
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { repo_path.join(p) })
+        .unwrap_or_else(|| repo_path.join("target"));
+    let built = target_root.join("release").join(exe_name);
     if !built.exists() {
         anyhow::bail!("编译产物不存在: {}", built.display());
     }
@@ -117,23 +121,54 @@ pub fn run(repo: Option<&str>, check_only: bool, features: Option<&str>, no_buil
         let tmp = cur.with_extension("exe.old");
         let _ = std::fs::remove_file(&tmp);
         std::fs::rename(&cur, &tmp)?;
-        std::fs::copy(&built, &cur)?;
+        if let Err(e) = std::fs::copy(&built, &cur) {
+            restore_binary(&cur, &bak)?;
+            anyhow::bail!("复制新版本失败，已恢复旧版本: {e}");
+        }
+        if let Err(e) = crate::sign::sign_path(&cur, false) {
+            restore_binary(&cur, &bak).map_err(|restore| anyhow::anyhow!(
+                "新版本签名失败（{e}），恢复旧版本也失败: {restore}"
+            ))?;
+            anyhow::bail!("新版本签名失败，已恢复旧版本: {e}");
+        }
         // 留 .old,下次启动后可清(或留给系统)
     }
     #[cfg(not(windows))]
     {
-        std::fs::copy(&built, &cur)?;
+        if let Err(e) = std::fs::copy(&built, &cur) {
+            restore_binary(&cur, &bak)?;
+            anyhow::bail!("复制新版本失败，已恢复旧版本: {e}");
+        }
     }
 
     // 7. 验证
-    let ver = Command::new(&cur).arg("--version").output()
-        .ok().and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
+    let verify = Command::new(&cur).arg("--version").output();
+    let ver = match verify {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Ok(out) => {
+            restore_binary(&cur, &bak)?;
+            anyhow::bail!(
+                "新版本自检失败，已恢复旧版本: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Err(e) => {
+            restore_binary(&cur, &bak)?;
+            anyhow::bail!("新版本无法启动，已恢复旧版本: {e}");
+        }
+    };
     println!("\n🎉 升级完成! {}", ver.trim());
     if updated {
         println!("   {} -> {}",
             &old_head.map(|h| h[..8].to_string()).unwrap_or_default(),
             &new_head.map(|h| h[..8].to_string()).unwrap_or_default());
     }
+    Ok(())
+}
+
+fn restore_binary(current: &Path, backup: &Path) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(current);
+    std::fs::copy(backup, current)?;
     Ok(())
 }
 

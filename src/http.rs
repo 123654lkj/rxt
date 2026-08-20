@@ -1,10 +1,8 @@
 //! HTTP 客户端 — curl 的 LLM 友好版，可借用本机浏览器 Cookie。
 //!
 //! - GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS
-//! - 真实超时、默认 Chrome UA、4xx 仍打印 body
-//! - `--browser chrome|edge|firefox|brave|auto` 读本机 Cookie
-//! - `--cookie-jar` Netscape 罐；`--cookie` 额外键值
-//! - `rxt http cookies --browser chrome github.com` 列出 Cookie
+//! - `forms` / `cli`：把网页收成 CLI（表单+链接），不走无头浏览器
+//! - `--form name=value` 提交表单；`--browser` / `--cookie-jar` 带登录态
 //! - `--text` 抽正文 / `--links` 抽链接 / `--budget` 截断 / `-o` 落盘
 
 use std::collections::BTreeMap;
@@ -37,6 +35,7 @@ pub struct HttpOpts<'a> {
     pub text: bool,
     pub links: bool,
     pub budget: Option<usize>,
+    pub form: &'a [String],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,6 +54,8 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
     if method == "COOKIES" {
         return dump_cookies(&opts);
     }
+    let wrap = matches!(method.as_str(), "FORMS" | "CLI" | "WRAP");
+    let fetch_verb: &str = if wrap { "GET" } else { method.as_str() };
 
     let url = opts
         .url
@@ -101,7 +102,14 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
     let agent = ureq::Agent::new_with_config(config);
 
     let auth_header = build_auth_header(opts.auth);
-    let body_data = opts.data.unwrap_or("");
+    let form_body = encode_form_fields(opts.form);
+    let body_owned: String;
+    let body_data: &str = if !form_body.is_empty() {
+        body_owned = form_body;
+        &body_owned
+    } else {
+        opts.data.unwrap_or("")
+    };
     let user_has_ua = has_header(opts.headers, "user-agent");
     let user_has_cookie = has_header(opts.headers, "cookie");
     let user_has_ct = has_header(opts.headers, "content-type");
@@ -131,19 +139,19 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         }};
     }
 
-    let result = match method.as_str() {
+    let result = match fetch_verb {
         "GET" => paint!(agent.get(url)).call(),
         "DELETE" => paint!(agent.delete(url)).call(),
         "HEAD" => paint!(agent.head(url)).call(),
         "OPTIONS" => paint!(agent.options(url)).call(),
         "POST" | "PUT" | "PATCH" => {
-            let mut r = match method.as_str() {
+            let mut r = match fetch_verb {
                 "POST" => paint!(agent.post(url)),
                 "PUT" => paint!(agent.put(url)),
                 _ => paint!(agent.patch(url)),
             };
             if !user_has_ct {
-                if opts.json_body {
+                if opts.json_body && opts.form.is_empty() {
                     r = r.header("Content-Type", "application/json");
                 } else {
                     r = r.header("Content-Type", "application/x-www-form-urlencoded");
@@ -152,7 +160,7 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
             r.send(body_data)
         }
         _ => anyhow::bail!(
-            "不支持的方法: {}（GET POST PUT DELETE HEAD OPTIONS PATCH；列 Cookie 用 cookies）",
+            "不支持的方法: {}（GET POST PUT DELETE HEAD OPTIONS PATCH；列 Cookie 用 cookies；包装网页用 forms / cli）",
             opts.method
         ),
     };
@@ -219,7 +227,7 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
     let looks_text = is_probably_text(ctype, &bytes);
-    if !looks_text && opts.output.is_none() && !opts.text && !opts.links {
+    if !looks_text && opts.output.is_none() && !opts.text && !opts.links && !wrap {
         eprintln!("# 二进制 {} bytes  type={}", bytes.len(), ctype);
         return Ok(());
     }
@@ -229,6 +237,11 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
     } else {
         String::new()
     };
+
+    if wrap {
+        print_page_cli(&method, url, &raw, opts.json_body, opts.budget)?;
+        return Ok(());
+    }
 
     if opts.links {
         let found = extract_links(url, &raw);
@@ -648,6 +661,197 @@ fn resolve_url(base: &str, href: &str) -> String {
     format!("{dir}{href}")
 }
 
+fn encode_form_fields(fields: &[String]) -> String {
+    let mut parts = Vec::new();
+    for f in fields {
+        let Some((k, v)) = f.split_once('=') else {
+            continue;
+        };
+        parts.push(format!(
+            "{}={}",
+            urlencoding::encode(k.trim()),
+            urlencoding::encode(v)
+        ));
+    }
+    parts.join("&")
+}
+
+fn html_attr(attrs: &str, key: &str) -> Option<String> {
+    let re = regex::Regex::new(&format!(
+        r#"(?i)\b{}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#,
+        regex::escape(key)
+    ))
+    .ok()?;
+    let cap = re.captures(attrs)?;
+    Some(
+        cap.get(1)
+            .or_else(|| cap.get(2))
+            .or_else(|| cap.get(3))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default(),
+    )
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+struct FormField {
+    name: String,
+    kind: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+struct HtmlForm {
+    action: String,
+    method: String,
+    name: Option<String>,
+    fields: Vec<FormField>,
+}
+
+fn parse_forms(base: &str, html: &str) -> Vec<HtmlForm> {
+    static RE_FORM: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_CTRL: OnceLock<regex::Regex> = OnceLock::new();
+    let re_form = RE_FORM.get_or_init(|| regex::Regex::new(r"(?is)<form\b([^>]*)>(.*?)</form>").unwrap());
+    let re_ctrl = RE_CTRL.get_or_init(|| {
+        regex::Regex::new(r"(?is)<(input|textarea|select|button)\b([^>]*)>").unwrap()
+    });
+    let mut out = Vec::new();
+    for cap in re_form.captures_iter(html) {
+        let attrs = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let body = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let action_raw = html_attr(attrs, "action").unwrap_or_default();
+        let action = if action_raw.is_empty() {
+            base.to_string()
+        } else {
+            resolve_url(base, &action_raw)
+        };
+        let method = html_attr(attrs, "method")
+            .unwrap_or_else(|| "GET".into())
+            .to_ascii_uppercase();
+        let name = html_attr(attrs, "name").or_else(|| html_attr(attrs, "id"));
+        let mut fields = Vec::new();
+        for c in re_ctrl.captures_iter(body) {
+            let tag = c.get(1).map(|m| m.as_str()).unwrap_or("input").to_ascii_lowercase();
+            let a = c.get(2).map(|m| m.as_str()).unwrap_or("");
+            let Some(fname) = html_attr(a, "name") else { continue };
+            if fname.is_empty() {
+                continue;
+            }
+            let kind = html_attr(a, "type").unwrap_or_else(|| tag.clone()).to_ascii_lowercase();
+            if matches!(kind.as_str(), "submit" | "reset" | "button" | "image") {
+                continue;
+            }
+            let value = html_attr(a, "value").unwrap_or_default();
+            fields.push(FormField {
+                name: fname,
+                kind,
+                value,
+            });
+        }
+        out.push(HtmlForm {
+            action,
+            method,
+            name,
+            fields,
+        });
+    }
+    out
+}
+
+fn sh_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._~/:".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+fn print_page_cli(
+    kind: &str,
+    url: &str,
+    html: &str,
+    json: bool,
+    budget: Option<usize>,
+) -> anyhow::Result<()> {
+    let forms = parse_forms(url, html);
+    let mut links = extract_links(url, html);
+    let max_links = (budget.unwrap_or(4000) / 80).clamp(8, 40);
+    if links.len() > max_links {
+        links.truncate(max_links);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "url": url,
+                "mode": kind.to_ascii_lowercase(),
+                "js": "no",
+                "hint": "无 JS 渲染。登录态用 --browser 或 --cookie-jar，不要无头浏览器。",
+                "forms": forms,
+                "links": links,
+            }))?
+        );
+        return Ok(());
+    }
+    if kind == "FORMS" {
+        if forms.is_empty() {
+            println!("# 无 <form>。SPA/接口页请抓 Network 里的 API，再用 rxt http GET/POST。");
+            return Ok(());
+        }
+        for (i, f) in forms.iter().enumerate() {
+            println!(
+                "# form {} {} {} {}",
+                i + 1,
+                f.method,
+                f.name.as_deref().unwrap_or("-"),
+                f.action
+            );
+            for field in &f.fields {
+                println!(
+                    "  {} {}\t{}",
+                    field.kind,
+                    field.name,
+                    if field.value.is_empty() { "-" } else { &field.value }
+                );
+            }
+        }
+        return Ok(());
+    }
+    println!("# rxt 网页 CLI  {}  （无 JS / 无头浏览器）", url);
+    println!("# 登录态: --browser chrome  或  --cookie-jar jar.txt");
+    println!(
+        "rxt http GET {} --text --budget {}",
+        sh_quote(url),
+        budget.unwrap_or(4000)
+    );
+    for (i, f) in forms.iter().enumerate() {
+        let mut cmd = format!("rxt http {} {}", f.method, sh_quote(&f.action));
+        for field in &f.fields {
+            let val = if field.value.is_empty() {
+                field.name.to_ascii_uppercase()
+            } else {
+                field.value.clone()
+            };
+            cmd.push_str(&format!(" --form {}={}", field.name, val));
+        }
+        cmd.push_str(" --cookie-jar jar.txt");
+        println!("# form {} {}", i + 1, f.name.as_deref().unwrap_or("-"));
+        println!("{}", cmd);
+    }
+    if !links.is_empty() {
+        println!("# links {}", links.len());
+        for l in &links {
+            println!(
+                "rxt http GET {} --text --budget {}",
+                sh_quote(l),
+                budget.unwrap_or(4000)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn origin_of(url: &str) -> Option<String> {
     let rest = url.split("://").nth(1)?;
     let hostport = rest.split('/').next()?;
@@ -842,5 +1046,32 @@ mod tests {
     fn browser_requires_cookies_feature() {
         let e = load_browser("chrome", None).unwrap_err().to_string();
         assert!(e.contains("cookies"));
+    }
+
+    #[test]
+    fn parse_login_form() {
+        let html = r#"<html><form id="login" action="/sess" method="post">
+            <input type="hidden" name="token" value="abc">
+            <input type="text" name="user">
+            <input type="password" name="pass">
+            <button type="submit">go</button>
+            </form>
+            <a href="/about">about</a></html>"#;
+        let forms = parse_forms("https://ex.com/login", html);
+        assert_eq!(forms.len(), 1);
+        assert_eq!(forms[0].method, "POST");
+        assert_eq!(forms[0].action, "https://ex.com/sess");
+        let names: Vec<_> = forms[0].fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["token", "user", "pass"]);
+        assert_eq!(forms[0].fields[0].value, "abc");
+        let links = extract_links("https://ex.com/login", html);
+        assert!(links.iter().any(|l| l == "https://ex.com/about"));
+    }
+
+    #[test]
+    fn form_fields_urlencoded() {
+        let s = encode_form_fields(&["q=hello world".into(), "n=1".into()]);
+        assert!(s.contains("q=hello%20world"));
+        assert!(s.contains("n=1"));
     }
 }

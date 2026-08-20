@@ -277,7 +277,9 @@ rxt mcp --sse    # SSE 模式
 | `deploy` | 部署二进制到远程（自动 OS + 格式校验） |
 | `version` | 批量查询版本 + 一致性检测 |
 | `sync` | 跨机目录同步（rsync 替代） |
-| `upgrade` | 自我更新（git pull + 编译 + 热替换） |
+| `upgrade` | 自我更新（git pull + 编译 + 热替换；Windows 拷贝后自动签） |
+| `plugin` | Git 风格外挂：`~/.rxt/plugins` 与 PATH 上 `rxt-<cmd>` |
+| `sign` | Windows 自签 Authenticode（`rxt sign` / `--trust`） |
 
 ### 实用工具
 
@@ -293,6 +295,22 @@ rxt mcp --sse    # SSE 模式
 | `time` | 命令计时 |
 | `jsonl` | 解析 Codex 会话 JSONL |
 
+### 插件与 Windows 签名
+
+未知子命令先找 `~/.rxt/plugins/<name>/`（`manifest.toml` + exe），再找 PATH 上的 `rxt-<name>`。内置命令不会被同名插件自动覆盖，覆盖需 `rxt plugin install --force`。
+
+```bash
+rxt plugin list
+rxt plugin install <exe|dir> [--name foo] [--force]
+rxt plugin remove <name>
+rxt plugin which <name>
+rxt sign              # 签当前 rxt.exe，导出 ~/.rxt/rxt-codesign.cer
+rxt sign --trust      # 导入 TrustedPublisher（可能要管理员）
+rxt sign target\release\rxt.exe --trust  # 用旧 rxt 签刚编出的新版本
+```
+
+Windows 上 `rxt build` 会签构建出的 exe，`upgrade` 会在热替换后签名，插件安装也会签名。第一次若新 exe 已被 WDAC 以 4551 拦截，要用仍能运行的旧 rxt 执行 `rxt sign <新exe> --trust`；被拦的程序无法先启动再给自己签名。若签过仍拦，把 `~/.rxt/rxt-codesign.cer` 加进代码完整性签名者规则（策略级，再编一遍解决不了）。
+
 ---
 
 ## 🏗️ 架构
@@ -305,6 +323,7 @@ rxt
 │   ├── 跳板机    → SSH-over-SSH (jump_host)  [v0.7.3+]
 │   ├── Linux     → bash/sh 命令
 │   └── Windows   → PowerShell 命令
+├── 插件        → ~/.rxt/plugins/<name>/ 或 PATH 上 rxt-<name>（未知子命令）
 └── MCP 模式    → JSON-RPC server, 供 AI agent 调用
 ```
 
@@ -399,8 +418,11 @@ cargo build --release --no-default-features
 ### v0.9.0 (2026-08-20)
 
 - **`http` / `cookies` 拆分**：默认只开 ureq；rookie 改为可选，Windows 能编过。`--browser` 无 cookies feature 时明确报错。
+- **`http cli` / `forms`**：把网页收成 CLI（表单+链接），登录态走 Cookie，不靠无头浏览器。
 - **接上 `rxt search`**：文档里有、clap 里没有的统一搜索（glob 文件名 / 内容）。
-- **去掉未挂接死代码**：`session`（旧 ssh2）、`plugin`、`seek`、`channel_update`、损坏的 `_gen_main.py`。
+- **去掉未挂接死代码**：`session`（旧 ssh2）、`seek`、`channel_update`、损坏的 `_gen_main.py`。
+- **Git 风格插件**：未知子命令走 `~/.rxt/plugins/<name>/` 再 PATH `rxt-<name>`；`rxt plugin list|install|remove|which`。同名不覆盖内置，除非 `install --force`。
+- **Windows 签名**：`rxt sign` / `rxt sign --trust`（自签 `CN=rxt-codesign`）；`rxt build`、`upgrade`、插件安装后自动签。WDAC 仍拦时把 `~/.rxt/rxt-codesign.cer` 加进代码完整性签名者，不是再编一遍。
 - **grep** 不再为判二进制先读全文；**find** 内容搜索走 rayon。
 - **`--text` / `--links`** 正则只编译一次。
 
