@@ -115,6 +115,10 @@ pub fn run(
                             continue;
                         }
                     }
+                    // 先按大小/扩展名/8KB 采样跳过，禁止为判二进制 fs::read 全文
+                    if crate::common::skip_heavy_file(&p) {
+                        continue;
+                    }
                     files.push(p);
                 }
             }
@@ -130,12 +134,7 @@ pub fn run(
         files
             .par_iter()
             .filter_map(|p| {
-                let raw = fs::read(p).ok()?;
-                let sample = raw.len().min(8192);
-                let nulls = raw[..sample].iter().filter(|&&b| b == 0).count();
-                if sample > 0 && nulls * 20 > sample {
-                    return None;
-                }
+                let raw = crate::common::read_text_bytes(p)?;
                 let sig = FileSignature::detect(&raw);
                 let content = to_utf8_lf(&raw, &sig);
                 let display = p
@@ -160,7 +159,18 @@ pub fn run(
             .flatten()
             .collect()
     } else {
-        let raw = fs::read(path)?;
+        let raw = match crate::common::read_text_bytes(path) {
+            Some(b) => b,
+            None => {
+                let sz = path.metadata().map(|m| m.len()).unwrap_or(0);
+                anyhow::bail!(
+                    "跳过 {}（{}，上限 {}）。二进制/超大文件不整读，避免 OOM。可用 RXT_MAX_TEXT_BYTES 覆盖",
+                    path.display(),
+                    crate::common::format_bytes(sz),
+                    crate::common::format_bytes(crate::common::max_text_bytes())
+                );
+            }
+        };
         let sig = FileSignature::detect(&raw);
         let content = to_utf8_lf(&raw, &sig);
         search_in_content(

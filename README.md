@@ -415,6 +415,12 @@ cargo build --release --no-default-features
 
 ## 📖 版本历史
 
+### v0.9.1 (2026-08-24)
+
+- **修 OOM**：`grep`/`search`/`find`/`read`/`cat`/`pack`/`digest` 整读前先看文件大小 + 二进制扩展名 + 8KB 采样。0.9.0 把「判二进制」放到 `fs::read` 全文之后，对 73GiB mkv 会先把整文件读进内存再丢弃（2026-08-22 两次 OOM，申请 `78871310336` 字节）。
+- 默认上限 32MiB，环境变量 `RXT_MAX_TEXT_BYTES` 或 `RXT_MAX_READ_MB` 可覆盖。
+- `FileSignature::detect` 只分析前 64KiB，避免 GBK.decode / from_utf8_lossy 再复制一份大文件。
+
 ### v0.9.0 (2026-08-20)
 
 - **`http` / `cookies` 拆分**：默认只开 ureq；rookie 改为可选，Windows 能编过。`--browser` 无 cookies feature 时明确报错。

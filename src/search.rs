@@ -122,6 +122,9 @@ fn search_by_content(
         if matches.len() >= max {
             break;
         }
+        if crate::common::skip_heavy_file(&file) {
+            continue;
+        }
         let content = match std::fs::read_to_string(&file) {
             Ok(c) => c,
             Err(_) => continue,

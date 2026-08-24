@@ -328,7 +328,7 @@ fn search_content(
     let mut results: Vec<(PathBuf, usize, String)> = files
         .par_iter()
         .filter_map(|path| {
-            let raw = fs::read(path).ok()?;
+            let raw = crate::common::read_text_bytes(path)?;
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
             let mut hits = Vec::new();
@@ -483,7 +483,7 @@ fn stats_by_type(dir: &Path, json_output: bool) -> anyhow::Result<()> {
             .and_then(|e| e.to_str())
             .map(|e| e.to_string())
             .unwrap_or_else(|| "_none".to_string());
-        if let Ok(raw) = fs::read(path) {
+        if let Some(raw) = crate::common::read_text_bytes(path) {
             let sig = FileSignature::detect(&raw);
             let content = to_utf8_lf(&raw, &sig);
             let lines = content.lines().count();
@@ -548,9 +548,9 @@ fn run_replace(
             }
         }
 
-        let raw = match fs::read(path) {
-            Ok(b) => b,
-            Err(_) => return,
+        let raw = match crate::common::read_text_bytes(path) {
+            Some(b) => b,
+            None => return,
         };
         let sig = FileSignature::detect(&raw);
         let content = to_utf8_lf(&raw, &sig);

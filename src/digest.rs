@@ -25,6 +25,13 @@ pub fn run(
     if path.is_dir() {
         return run_dir(path, threshold, budget, json_output);
     }
+    if crate::common::skip_heavy_file(path) {
+        anyhow::bail!(
+            "跳过 {}（超过 {} 或二进制）",
+            path.display(),
+            crate::common::format_bytes(crate::common::max_text_bytes())
+        );
+    }
     let content = std::fs::read_to_string(path)?;
     let symbols = match crate::langs::extract_symbols(path, &content) {
         Some(s) => s,
@@ -246,6 +253,9 @@ fn run_dir(
     let mut text_out: Vec<(String, usize, Vec<DigestEntry>)> = Vec::new();
 
     for f in &files {
+        if crate::common::skip_heavy_file(f) {
+            continue;
+        }
         let content = match std::fs::read_to_string(f) {
             Ok(c) => c,
             Err(_) => continue,

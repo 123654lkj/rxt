@@ -574,3 +574,171 @@ pub fn is_ignored_dir(name: &str) -> bool {
 pub fn matches_gitignore_pub(pattern: &str, name: &str) -> bool {
     matches_gitignore(pattern, name)
 }
+
+// ===== v0.9.1 内容读取帽道 =====
+// 2026-08-22：rxt 0.9.0 grep 对 73GiB mkv 做 fs::read 全文。
+// kernel: __vm_enough_memory bytes=78871310336（与 Chamber.of.Secrets UHD remux 只差 2844 字节），
+// 随后 OOM killer 杀掉 RSS~19.5GiB 的 rxt。判二进制必须先看扩展名/大小/8KB 采样，禁止先整读。
+
+/// 默认单文件内容读取上限。`RXT_MAX_TEXT_BYTES`（字节）或 `RXT_MAX_READ_MB`（MiB）可覆盖。
+pub const DEFAULT_MAX_READ_BYTES: u64 = 32 * 1024 * 1024;
+
+const BINARY_EXTS: &[&str] = &[
+    "mkv", "mp4", "webm", "avi", "mov", "m4v", "ts", "m2ts", "flv", "wmv",
+    "mp3", "flac", "wav", "aac", "ogg", "m4a", "wma", "opus",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "psd", "tiff", "heic",
+    "zip", "7z", "rar", "gz", "bz2", "xz", "zst", "iso", "tar",
+    "gguf", "bin", "exe", "dll", "so", "dylib", "wasm", "o", "a",
+    "db", "sqlite", "sqlite3", "parquet",
+    "woff", "woff2", "ttf", "otf", "eot",
+    "pdf", "docx", "xlsx", "pptx",
+];
+
+pub fn max_text_read_bytes() -> u64 {
+    if let Ok(s) = std::env::var("RXT_MAX_TEXT_BYTES") {
+        if let Ok(n) = s.parse::<u64>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    match std::env::var("RXT_MAX_READ_MB") {
+        Ok(s) => s
+            .parse::<u64>()
+            .ok()
+            .map(|mb| mb.saturating_mul(1024 * 1024))
+            .unwrap_or(DEFAULT_MAX_READ_BYTES),
+        Err(_) => DEFAULT_MAX_READ_BYTES,
+    }
+}
+
+pub fn max_text_bytes() -> u64 {
+    max_text_read_bytes()
+}
+
+pub fn looks_binary_prefix(sample: &[u8]) -> bool {
+    if sample.is_empty() {
+        return false;
+    }
+    let n = sample.len();
+    let nulls = sample.iter().filter(|&&b| b == 0).count();
+    nulls * 20 > n
+}
+
+pub fn is_binary_ext(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| BINARY_EXTS.iter().any(|b| e.eq_ignore_ascii_case(b)))
+        .unwrap_or(false)
+}
+
+/// 扩展名或体积超限：连整文件 open+read 都不必。
+pub fn should_skip_content(path: &Path) -> bool {
+    if is_binary_ext(path) {
+        return true;
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > max_text_read_bytes() => true,
+        Err(_) => true,
+        _ => false,
+    }
+}
+
+pub fn skip_heavy_file(path: &Path) -> bool {
+    should_skip_content(path)
+}
+
+/// 先看 metadata + 头 8KB，绝不先把整文件读进内存。
+pub fn read_bytes_capped(path: &Path) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    if should_skip_content(path) {
+        return None;
+    }
+    let max = max_text_read_bytes();
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len > max {
+        return None;
+    }
+    let mut sample = [0u8; 8192];
+    let n = f.read(&mut sample).ok()?;
+    if looks_binary_prefix(&sample[..n]) {
+        return None;
+    }
+    if (n as u64) >= len {
+        return Some(sample[..n].to_vec());
+    }
+    f.seek(SeekFrom::Start(0)).ok()?;
+    let mut buf = Vec::new();
+    if buf.try_reserve((len as usize).min(max as usize)).is_err() {
+        return None;
+    }
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+pub fn read_text_bytes(path: &Path) -> Option<Vec<u8>> {
+    read_bytes_capped(path)
+}
+
+pub fn read_utf8_lossy_capped(path: &Path) -> Option<String> {
+    let raw = read_bytes_capped(path)?;
+    Some(String::from_utf8_lossy(&raw).into_owned())
+}
+
+pub fn format_bytes(n: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if n >= 1024 * 1024 * 1024 {
+        format!("{:.1} GiB", n as f64 / GIB)
+    } else if n >= 1024 * 1024 {
+        format!("{:.1} MiB", n as f64 / MIB)
+    } else {
+        format!("{} B", n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn skip_mkv_ext() {
+        assert!(is_binary_ext(Path::new("a.mkv")));
+        assert!(is_binary_ext(Path::new("A.MP4")));
+        assert!(is_binary_ext(Path::new("model.gguf")));
+        assert!(!is_binary_ext(Path::new("a.rs")));
+        assert!(!is_binary_ext(Path::new("notes.md")));
+    }
+
+    #[test]
+    fn skip_oversize_sparse() {
+        let dir = std::env::temp_dir().join(format!("rxt-cap-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("big.txt");
+        {
+            let f = std::fs::File::create(&p).unwrap();
+            f.set_len(80 * 1024 * 1024 * 1024).unwrap();
+        }
+        assert!(should_skip_content(&p));
+        assert!(read_bytes_capped(&p).is_none());
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn read_small_ok() {
+        let dir = std::env::temp_dir().join(format!("rxt-cap-small-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("ok.rs");
+        {
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(b"fn main() {}\n").unwrap();
+        }
+        let s = read_utf8_lossy_capped(&p).unwrap();
+        assert!(s.contains("fn main"));
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir(&dir);
+    }
+}

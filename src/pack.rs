@@ -194,6 +194,9 @@ pub fn run(
 
     if !no_digest {
         for f in &files {
+            if crate::common::skip_heavy_file(f) {
+                continue;
+            }
             let content = match std::fs::read_to_string(f) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -245,6 +248,9 @@ pub fn run(
         });
     } else {
         for f in &files {
+            if crate::common::skip_heavy_file(f) {
+                continue;
+            }
             if let Ok(c) = std::fs::read_to_string(f) {
                 total_loc += c.lines().count();
             }
@@ -569,6 +575,9 @@ fn compact_grep(root: &Path, query: &str, max: usize) -> Vec<String> {
     for f in files {
         if hits.len() >= max {
             break;
+        }
+        if crate::common::skip_heavy_file(&f) {
+            continue;
         }
         let Ok(content) = std::fs::read_to_string(&f) else {
             continue;

@@ -517,6 +517,11 @@ rxt trash --purge                  # 清空回收站
 - 星枢：`rxt mem bootstrap|ask|save`；进仓：`rxt pack -b 5000`
 - 部署：在 **对应架构** 机上 `cargo build --release`，再 `rxt deploy <ELF> -t huhu` 或 scp
 
+## 0.9.1（2026-08-24）
+
+- 修 0.9.0 grep/search 对超大二进制（mkv/gguf）`fs::read` 全文导致 OOM
+- 默认整读上限 32MiB（`RXT_MAX_TEXT_BYTES` 或 `RXT_MAX_READ_MB`）
+
 ## 0.9.0（2026-08-20）
 
 - 版本号 0.9.0；`rxt search` 可用

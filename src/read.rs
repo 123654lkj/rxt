@@ -18,6 +18,19 @@ pub fn run(
     json_output: bool,
     remote: Option<&crate::remote::RemoteChannel>,
 ) -> anyhow::Result<()> {
+    if remote.is_none() {
+        if let Ok(meta) = path.metadata() {
+            let max = crate::common::max_text_bytes();
+            if meta.len() > max {
+                anyhow::bail!(
+                    "拒绝整读 {}（{} > {}）。避免 OOM；设 RXT_MAX_TEXT_BYTES 或改用 ffmpeg/hexdump",
+                    path.display(),
+                    crate::common::format_bytes(meta.len()),
+                    crate::common::format_bytes(max)
+                );
+            }
+        }
+    }
     let raw = if let Some(remote) = remote {
         remote.read_file(path)?
     } else {

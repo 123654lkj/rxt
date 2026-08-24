@@ -84,13 +84,15 @@ pub struct FileSignature {
 }
 
 impl FileSignature {
-    /// 从字节检测文件指纹
+    /// 从字节检测文件指纹。编码/换行/缩进只看前 64KiB，避免大文件二次解码。
     pub fn detect(raw: &[u8]) -> Self {
-        let encoding = detect_encoding(raw);
-        let has_bom = detect_bom(raw);
-        let line_ending = detect_line_ending(raw);
-        let indent = detect_indent(raw);
-        let lines = raw.iter().filter(|&&b| b == b'\n').count();
+        const SAMPLE: usize = 65536;
+        let sample = if raw.len() > SAMPLE { &raw[..SAMPLE] } else { raw };
+        let encoding = detect_encoding(sample);
+        let has_bom = detect_bom(sample);
+        let line_ending = detect_line_ending(sample);
+        let indent = detect_indent(sample);
+        let lines = sample.iter().filter(|&&b| b == b'\n').count();
         let bytes = raw.len();
 
         Self {
@@ -103,10 +105,18 @@ impl FileSignature {
         }
     }
 
-    /// 从文件路径检测
+    /// 从文件路径检测。只读前 64KiB，不把 mkv/gguf 整文件读进内存。
     pub fn detect_file(path: &Path) -> anyhow::Result<Self> {
-        let raw = std::fs::read(path)?;
-        Ok(Self::detect(&raw))
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let mut buf = vec![0u8; 65536];
+        let n = f.read(&mut buf)?;
+        buf.truncate(n);
+        let mut sig = Self::detect(&buf);
+        if let Ok(meta) = path.metadata() {
+            sig.bytes = meta.len() as usize;
+        }
+        Ok(sig)
     }
 }
 
