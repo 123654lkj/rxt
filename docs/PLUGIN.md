@@ -1,5 +1,6 @@
 # rxt 插件开发指南
 
+> **rxt** = **Run eXternal Tools**（跑外部工具）。  
 > 对照 **rxt 0.10.0**。核心宿主 `src/core_cli.rs`；标准库 `src/tools_app.rs` + `rxt-tools`。  
 > 写插件只看这一页：创建、安装、契约、调度、管理命令。
 

@@ -2,7 +2,7 @@
 name = "rxt"
 version = "0.10.0"
 edition = "2021"
-description = "Remote eXtension Toolkit — tiny core host, everything else is a plugin"
+description = "Run eXternal Tools — tiny core host that runs installable plugins"
 repository = "https://github.com/123654lkj/rxt"
 
 [[bin]]

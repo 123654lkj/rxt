@@ -1,6 +1,6 @@
 # rxt 使用手册 — AI Agent 操作指南
 
-> **rxt** (Remote eXtension Toolkit) — 远程扩展工具箱。0.10 起小核心 + 全插件。
+> **rxt** (Run eXternal Tools) — 跑外部工具。0.10 起小核心 + 全插件。
 >
 > 核心：plugin / exec / info / version / upgrade / deploy / publish / sign。
 > 业务命令（pack/grep/mem/http…）用 `rxt plugin seed` 安装，可单独卸载。

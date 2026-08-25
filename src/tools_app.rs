@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[command(
     name = "rxt",
     version,
-    about = "rxt-tools — Remote eXtension Toolkit 标准库（由 rxt 按插件调度）",
+    about = "rxt-tools — Run eXternal Tools 标准库（由 rxt 按插件调度）",
     allow_external_subcommands = true
 )]
 pub struct Cli {

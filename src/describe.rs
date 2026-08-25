@@ -67,7 +67,7 @@ pub fn schema_from_command(mut cmd: clap::Command) -> Value {
     json!({
         "name": "rxt",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "Remote eXtension Toolkit — tiny core, plugins for everything",
+        "description": "Run eXternal Tools — tiny core that runs installable plugins",
         "global_flags": [
             {"name": "host", "long": "host", "type": "Option<String>", "help": "远程主机(~/.rxt/hosts.toml)"},
             {"name": "group", "long": "group", "type": "Option<String>", "help": "远程主机组(批量执行)"},

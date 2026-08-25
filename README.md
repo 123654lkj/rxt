@@ -1,6 +1,6 @@
-# rxt — Remote eXtension Toolkit
+# rxt — Run eXternal Tools
 
-> **远程扩展工具箱**。小核心，全插件。同一条命令管本地和远程。
+> **跑外部工具**。小核心，全插件。同一条命令管本地和远程。
 
 `rxt` 不再是「把 70 个命令焊死在一个二进制里」。  
 **0.10** 起：宿主只留 8 个核心命令；`pack` / `grep` / `mem` / `http` / `read` … 全部是可单独安装、卸载的插件。加功能不必重编 rxt。
@@ -24,13 +24,15 @@ rxt hello
 
 ## 为什么叫这个名字
 
-| 字母 | 含义 |
-|------|------|
-| **R**emote | `--host` / `--group` 透明远程 |
-| **X**tension | Git 风格外挂：未知子命令去找插件 |
-| **T**oolkit | 官方标准库 + 你自己的插件 |
+| 字母 | 单词 | 意思 |
+|------|------|------|
+| **R** | Run | 宿主只负责把命令跑起来 |
+| **X** | eXternal | 真正干活的是外面的插件，不是焊死在 rxt 里 |
+| **T** | Tools | `pack` / `grep` / 你自己写的 `rxt-foo` |
 
-旧称 “Rust Codex Tools” 已弃用。命令名仍是 `rxt`。
+`rxt pack` = 跑名为 pack 的外部工具。`--host` 也一样，只是跑到另一台机器上。
+
+旧称 “Rust Codex Tools” / “Remote eXtension Toolkit” 已弃用。命令名仍是 `rxt`。
 
 ---
 
@@ -209,7 +211,7 @@ src/lib.rs         → 共享实现
 - 67 个业务命令改为标准库插件，`rxt plugin seed/remove/add` 单独装卸，不必重编 rxt
 - 二进制拆成 `rxt` + `rxt-tools`（多路调用，不是 70 份拷贝）
 - `--host` 对插件改为远端执行 `rxt <cmd>`
-- 品牌：Remote eXtension Toolkit，不再使用 “Rust Codex Tools”
+- 品牌：Run eXternal Tools（跑外部工具），不再使用 “Rust Codex Tools”
 
 ### v0.9.4
 
