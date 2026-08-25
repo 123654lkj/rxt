@@ -278,7 +278,7 @@ rxt mcp --sse    # SSE 模式
 | `version` | 批量查询版本 + 一致性检测 |
 | `sync` | 跨机目录同步（rsync 替代） |
 | `upgrade` | 自我更新（git pull + 编译 + 热替换；Windows 拷贝后自动签） |
-| `plugin` | Git 风格外挂：`~/.rxt/plugins` 与 PATH 上 `rxt-<cmd>` |
+| `plugin` | Git 风格外挂：`~/.rxt/plugins` 与 PATH 上 `rxt-<cmd>`（[写插件](docs/PLUGIN.md)） |
 | `sign` | Windows 自签 Authenticode（`rxt sign` / `--trust`） |
 
 ### 实用工具
@@ -298,6 +298,8 @@ rxt mcp --sse    # SSE 模式
 ### 插件与 Windows 签名
 
 未知子命令先找 `~/.rxt/plugins/<name>/`（`manifest.toml` + exe），再找 PATH 上的 `rxt-<name>`。内置命令不会被同名插件自动覆盖，覆盖需 `rxt plugin install --force`。
+
+**写插件**（注册结构、argv/环境契约、最小例子）：[docs/PLUGIN.md](docs/PLUGIN.md)
 
 ```bash
 rxt plugin list
@@ -414,6 +416,11 @@ cargo build --release --no-default-features
 ---
 
 ## 📖 版本历史
+
+### v0.9.2 (2026-08-25)
+
+- **星枢地址不再写死局域网 IP**。`rxt mem` 默认 `http://127.0.0.1:26670`；跨机设 `RXT_NEBULA_URL` / `NEBULA_URL`。SSH 跳板仅在设置 `RXT_NEBULA_SSH`（或 `rxt --host … mem`）时启用，远端 curl 地址可用 `RXT_NEBULA_REMOTE_URL` 覆盖。
+- **插件开发文档**：[`docs/PLUGIN.md`](docs/PLUGIN.md)
 
 ### v0.9.1 (2026-08-24)
 

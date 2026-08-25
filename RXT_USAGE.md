@@ -517,6 +517,11 @@ rxt trash --purge                  # 清空回收站
 - 星枢：`rxt mem bootstrap|ask|save`；进仓：`rxt pack -b 5000`
 - 部署：在 **对应架构** 机上 `cargo build --release`，再 `rxt deploy <ELF> -t huhu` 或 scp
 
+## 0.9.2（2026-08-25）
+
+- 星枢默认 `http://127.0.0.1:26670`，不再写局域网 IP。跨机：`RXT_NEBULA_URL`；跳板：`RXT_NEBULA_SSH`
+- 写插件：`docs/PLUGIN.md`
+
 ## 0.9.1（2026-08-24）
 
 - 修 0.9.0 grep/search 对超大二进制（mkv/gguf）`fs::read` 全文导致 OOM

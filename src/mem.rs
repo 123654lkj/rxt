@@ -1,31 +1,33 @@
 //! 星枢记忆 CLI — 对接 Nebula v5（真牛逼）
 //!
-//! 修复痛点（相对 0.8.2）：
-//! 1. 默认连 huhu `:26670`，不再误打 daemon `:26671`
-//! 2. search 走 `/ask`（contract/pack），省 token
-//! 3. save 走 `/memory/add`（密钥拦截）
-//! 4. 支持 extract / bootstrap / health
-//! 5. URL 可由 RXT_NEBULA_URL / NEBULA_URL 覆盖
-//! 6. `mem ask` = `mem search` 别名（Agent 友好）
+//! - 默认连本机 `http://127.0.0.1:26670`（用 RXT_NEBULA_URL / NEBULA_URL 覆盖）
+//! - search 走 `/ask`（contract/pack），省 token
+//! - save 走 `/memory/add`（密钥拦截）
+//! - 支持 extract / bootstrap / health
+//! - 直连失败可选 SSH 跳板：RXT_NEBULA_SSH=<hosts.toml 别名或 ssh host>
+//! - `mem ask` = `mem search` 别名（Agent 友好）
+//!
+//! 不要把局域网 IP 写进二进制。跨机请在 `~/.rxt/env` 设 RXT_NEBULA_URL。
 
 use crate::common::setup_utf8_console;
 use std::io::Write;
 use std::time::Duration;
 
-/// 默认星枢地址（局域网 huhu；本机跑服务时用 env 覆盖）
+const DEFAULT_NEBULA_URL: &str = "http://127.0.0.1:26670";
+
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// 星枢地址：RXT_NEBULA_URL → NEBULA_URL → 本机回环
 fn nebula_base() -> String {
-    if let Ok(u) = std::env::var("RXT_NEBULA_URL") {
-        if !u.trim().is_empty() {
-            return u.trim().trim_end_matches('/').to_string();
-        }
-    }
-    if let Ok(u) = std::env::var("NEBULA_URL") {
-        if !u.trim().is_empty() {
-            return u.trim().trim_end_matches('/').to_string();
-        }
-    }
-    // Windows/跨机默认 huhu；在 huhu 本机也可设 NEBULA_URL=http://127.0.0.1:26670
-    "http://192.168.31.252:26670".to_string()
+    env_nonempty("RXT_NEBULA_URL")
+        .or_else(|| env_nonempty("NEBULA_URL"))
+        .map(|u| u.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| DEFAULT_NEBULA_URL.to_string())
 }
 
 fn agent() -> ureq::Agent {
@@ -35,16 +37,26 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-/// 直连失败时：经 `ssh huhu` 本机 curl 127.0.0.1:26670（修 Win/代理拦 26670 痛点）
-fn ssh_host() -> String {
-    std::env::var("RXT_NEBULA_SSH").unwrap_or_else(|_| "huhu".to_string())
+/// 直连失败时可选：`ssh <host>` 在远端 curl 星枢（Win 透明代理拦端口时用）
+fn ssh_host() -> Option<String> {
+    env_nonempty("RXT_NEBULA_SSH")
+}
+
+/// 跳板机上 curl 的地址（默认本机回环，可用 RXT_NEBULA_REMOTE_URL 覆盖）
+fn nebula_remote_loopback() -> String {
+    env_nonempty("RXT_NEBULA_REMOTE_URL")
+        .map(|u| u.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| DEFAULT_NEBULA_URL.to_string())
 }
 
 fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let host = ssh_host();
+    let host = ssh_host().ok_or_else(|| {
+        anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢")
+    })?;
     let body = serde_json::to_string(payload)?;
+    let base = nebula_remote_loopback();
     let remote = format!(
-        "curl -sS -m 90 -X POST 'http://127.0.0.1:26670{path}' -H 'Content-Type: application/json; charset=utf-8' --data-binary @-"
+        "curl -sS -m 90 -X POST '{base}{path}' -H 'Content-Type: application/json; charset=utf-8' --data-binary @-"
     );
     let out = std::process::Command::new("ssh")
         .arg(&host)
@@ -78,8 +90,11 @@ fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde
 }
 
 fn get_via_ssh(path: &str) -> anyhow::Result<serde_json::Value> {
-    let host = ssh_host();
-    let remote = format!("curl -sS -m 30 'http://127.0.0.1:26670{path}'");
+    let host = ssh_host().ok_or_else(|| {
+        anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢")
+    })?;
+    let base = nebula_remote_loopback();
+    let remote = format!("curl -sS -m 30 '{base}{path}'");
     let out = std::process::Command::new("ssh")
         .arg(&host)
         .arg(remote)
@@ -110,16 +125,16 @@ fn post_json(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde_js
         }
         Err(e) => {
             // 直连失败（Win 透明代理/503/断连）→ ssh 跳板
-            if std::env::var("RXT_MEM_NO_SSH").is_ok() {
+            if std::env::var("RXT_MEM_NO_SSH").is_ok() || ssh_host().is_none() {
                 return Err(anyhow::anyhow!(
-                    "星枢请求失败 {} — {}\n提示: 检查 RXT_NEBULA_URL 或设 RXT_NEBULA_SSH=huhu",
+                    "星枢请求失败 {} — {}\n提示: 设 RXT_NEBULA_URL，或 RXT_NEBULA_SSH=<跳板主机>（写入 ~/.rxt/env）",
                     url,
                     e
                 ));
             }
             post_via_ssh(path, payload).map_err(|e2| {
                 anyhow::anyhow!(
-                    "星枢直连失败 ({})；ssh 跳板也失败 ({})\n提示: RXT_NEBULA_URL / RXT_NEBULA_SSH / ssh huhu",
+                    "星枢直连失败 ({})；ssh 跳板也失败 ({})\n提示: RXT_NEBULA_URL / RXT_NEBULA_SSH",
                     e,
                     e2
                 )
@@ -136,11 +151,16 @@ fn get_json(path: &str) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::from_str(&body)?)
         }
         Err(e) => {
-            if std::env::var("RXT_MEM_NO_SSH").is_ok() {
-                return Err(anyhow::anyhow!("星枢 GET 失败 {} — {}", url, e));
+            if std::env::var("RXT_MEM_NO_SSH").is_ok() || ssh_host().is_none() {
+                return Err(anyhow::anyhow!(
+                    "星枢 GET 失败 {} — {}\n提示: 设 RXT_NEBULA_URL 或 RXT_NEBULA_SSH",
+                    url,
+                    e
+                ));
             }
-            get_via_ssh(path)
-                .map_err(|e2| anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2))
+            get_via_ssh(path).map_err(|e2| {
+                anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2)
+            })
         }
     }
 }
@@ -349,12 +369,13 @@ pub fn run_help() -> anyhow::Result<()> {
          layers <f>     分层调用计划\n\
          help           本帮助\n\
          环境:\n\
-           RXT_NEBULA_URL / NEBULA_URL  覆盖 API 地址\n\
-           RXT_NEBULA_SSH / --host X    直连失败时的 ssh 跳板主机（默认 huhu）\n\
+           RXT_NEBULA_URL / NEBULA_URL  API 地址（默认 http://127.0.0.1:26670）\n\
+           RXT_NEBULA_SSH / --host X    直连失败时的 ssh 跳板（未设则不跳板）\n\
+           RXT_NEBULA_REMOTE_URL        跳板远端 curl 地址（默认 http://127.0.0.1:26670）\n\
            RXT_MEM_NO_SSH=1            禁用 ssh 跳板\n\
            RXT_AGENT=1                 管道捕获时写 UTF-8 BOM（防 PS 乱码）\n\
-         密钥: 明文禁入；用 bw-ai / :26670/secrets/*\n\
-         例: rxt --host huhu mem search 网关",
+         密钥: 明文禁入；走 secrets 接口，勿写入记忆\n\
+         例: rxt mem search 网关配置",
         nebula_base()
     ));
     Ok(())
