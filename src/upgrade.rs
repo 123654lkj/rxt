@@ -80,7 +80,7 @@ pub fn run(
     } else {
         // 4. 编译
         let feats = determine_features(&repo_path, features);
-        let mut args = vec!["build", "--release"];
+        let mut args = vec!["build", "--release", "--bin", "rxt", "--bin", "rxt-tools"];
         let no_default = feats
             .as_deref()
             .map(|f| {

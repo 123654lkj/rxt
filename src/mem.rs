@@ -50,9 +50,8 @@ fn nebula_remote_loopback() -> String {
 }
 
 fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    let host = ssh_host().ok_or_else(|| {
-        anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢")
-    })?;
+    let host = ssh_host()
+        .ok_or_else(|| anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢"))?;
     let body = serde_json::to_string(payload)?;
     let base = nebula_remote_loopback();
     let remote = format!(
@@ -90,9 +89,8 @@ fn post_via_ssh(path: &str, payload: &serde_json::Value) -> anyhow::Result<serde
 }
 
 fn get_via_ssh(path: &str) -> anyhow::Result<serde_json::Value> {
-    let host = ssh_host().ok_or_else(|| {
-        anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢")
-    })?;
+    let host = ssh_host()
+        .ok_or_else(|| anyhow::anyhow!("未设置 RXT_NEBULA_SSH，无法走 SSH 跳板访问星枢"))?;
     let base = nebula_remote_loopback();
     let remote = format!("curl -sS -m 30 '{base}{path}'");
     let out = std::process::Command::new("ssh")
@@ -158,9 +156,8 @@ fn get_json(path: &str) -> anyhow::Result<serde_json::Value> {
                     e
                 ));
             }
-            get_via_ssh(path).map_err(|e2| {
-                anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2)
-            })
+            get_via_ssh(path)
+                .map_err(|e2| anyhow::anyhow!("星枢 GET 直连失败 ({})；ssh 跳板也失败 ({})", e, e2))
         }
     }
 }

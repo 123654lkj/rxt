@@ -114,8 +114,7 @@ fn handle_initialize() -> Value {
 /// 从 rxt 自身的 --describe 输出生成 MCP tools/list
 fn build_tools_list(slim: bool) -> Value {
     // 直接调自身 --describe
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rxt"));
-    let out = Command::new(&exe).arg("--describe").output();
+    let out = Command::new("rxt").arg("--describe").output();
     let describe = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => return json!({"tools": []}),
@@ -287,8 +286,8 @@ fn handle_tools_call(params: &Value) -> Value {
     let cmd_args = final_args;
 
     // 执行 rxt 子命令
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rxt"));
-    let result = Command::new(&exe).args(&cmd_args).output();
+    // 走核心 rxt，让 pack/grep 等走插件调度（不要用 rxt-tools 自身路径）
+    let result = Command::new("rxt").args(&cmd_args).output();
 
     let (content, is_error) = match result {
         Ok(o) => {
@@ -313,8 +312,7 @@ fn handle_tools_call(params: &Value) -> Value {
 
 /// 查 describe 获取某命令的位置参数名列表(无 long 的参数)
 fn get_positional_args(cmd_name: &str) -> Vec<String> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rxt"));
-    let out = Command::new(&exe).arg("--describe").output();
+    let out = Command::new("rxt").arg("--describe").output();
     let describe = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => return Vec::new(),

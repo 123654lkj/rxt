@@ -87,7 +87,11 @@ impl FileSignature {
     /// 从字节检测文件指纹。编码/换行/缩进只看前 64KiB，避免大文件二次解码。
     pub fn detect(raw: &[u8]) -> Self {
         const SAMPLE: usize = 65536;
-        let sample = if raw.len() > SAMPLE { &raw[..SAMPLE] } else { raw };
+        let sample = if raw.len() > SAMPLE {
+            &raw[..SAMPLE]
+        } else {
+            raw
+        };
         let encoding = detect_encoding(sample);
         let has_bom = detect_bom(sample);
         let line_ending = detect_line_ending(sample);

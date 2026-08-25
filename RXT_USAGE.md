@@ -1,10 +1,9 @@
 # rxt 使用手册 — AI Agent 操作指南
 
-> **rxt** (Rust Codex Tools) — 仙兔儿的跨平台远程执行工具，版本 0.4.0
-> 
-> 核心能力：本地/SSH 远程文件读写、代码执行、搜索、Git 操作、系统管理，统一 CLI + MCP 双模式。
+> **rxt** (Remote eXtension Toolkit) — 远程扩展工具箱。0.10 起小核心 + 全插件。
 >
-> 部署在三台机器：本地 Windows、huhu (192.168.31.252)、tuanzi (192.168.31.244)
+> 核心：plugin / exec / info / version / upgrade / deploy / publish / sign。
+> 业务命令（pack/grep/mem/http…）用 `rxt plugin seed` 安装，可单独卸载。
 
 ---
 
@@ -18,26 +17,13 @@
 | `--group <GROUP>` | 批量执行多个主机 | `rxt exec --group all "uptime"` |
 | `--json` | JSON 输出（部分命令支持） | `rxt ls --json` |
 
-**主机配置**在 `~/.rxt/hosts.toml`，当前配置：
+**主机配置**在 `~/.rxt/hosts.toml`。密码只走 `password_env` 或密钥，**禁止明文写进仓库**：
 
 ```toml
-[hosts.huhu]
-host = "192.168.31.252"
-user = "huhu"
-password = "Xiantuer123.."
-port = 22
-
-[hosts.tuanzi]
-host = "192.168.31.244"
-user = "tuanzi"
-password = "Xiantuer123.."
-port = 22
-
-[hosts.xian]
-os = "windows"
-host = "192.168.31.169"
-user = "xiantuer"
-password = "Xiantuer123.."
+[hosts.alpha]
+host = "10.0.0.10"
+user = "deploy"
+password_env = "RXT_PASS_ALPHA"
 port = 22
 ```
 
@@ -257,13 +243,14 @@ rxt ps --host huhu --top 5          # 远程查看
 | `snapshot` | 文件快照+回滚 | `rxt snapshot --label "before-fix"` |
 | `repeat` | 轮询重试 | `rxt repeat --port 5432 --timeout 30` |
 | `upgrade` | 自我更新 | `rxt upgrade` / `rxt upgrade --check` |
-| `plugin` | Git 风格外挂注册 | `rxt plugin list` / `rxt plugin install <exe>` |
+| `plugin` | Git 风格外挂 | `rxt plugin new foo` / `rxt plugin add ./exe` / `rxt plugin list` |
 | `sign` | Windows 代码签名 | `rxt sign` / `rxt sign --trust` |
 | `map` | 项目结构简报 | `rxt map --depth 2` |
 
 #### http 详解
 
 ```bash
+rxt http GET https://a.example/ https://b.example/ -j   # 两个网页并行，一份 JSON
 rxt http GET https://api.example.com              # GET（默认 Chrome UA，超时生效）
 rxt http POST https://api.example.com -d '{"key":"val"}' -j   # POST JSON
 rxt http GET https://api.example.com -i           # 显示响应头
@@ -517,6 +504,20 @@ rxt trash --purge                  # 清空回收站
 - 星枢：`rxt mem bootstrap|ask|save`；进仓：`rxt pack -b 5000`
 - 部署：在 **对应架构** 机上 `cargo build --release`，再 `rxt deploy <ELF> -t huhu` 或 scp
 
+## 0.9.4（2026-08-25）
+
+- **插件创建闭环**：`rxt plugin new/add/install/edit/show/which/remove`
+  - `new` 一键脚手架（`--lang sh|py|cmd|ps1`、`--body`、`--stdin`、`--open`、`--json`）
+  - `add` 智能：路径存在则安装，否则创建（修 0.9.3 `add=install` 把名字当路径的坑）
+  - 脚本可当插件，Windows 不再强制 `.exe`（`.cmd` 启动器调 Git Bash/python/pwsh）
+  - `install` 目录整树拷贝（跳过 `.git`/`node_modules`/`target`），不再只拷一个 exe
+  - 未知子命令回退 recipe：`rxt recipe add foo "命令"` 之后可以直接 `rxt foo`
+- 文档：`docs/PLUGIN.md`
+
+## 0.9.3（2026-08-25）
+
+- `rxt http GET url1 url2 -j` 并行请求，打包一份 JSON
+
 ## 0.9.2（2026-08-25）
 
 - 星枢默认 `http://127.0.0.1:26670`，不再写局域网 IP。跨机：`RXT_NEBULA_URL`；跳板：`RXT_NEBULA_SSH`
@@ -533,23 +534,29 @@ rxt trash --purge                  # 清空回收站
 - feature：默认 `http`（ureq）；`--browser` 需 `--features cookies` 或 `--features net`
 - grep 去掉双重全文读；find 内容搜索并行
 - Cookie 值不进日志；Chrome 127+ 读 Cookie 可能要管理员
-- **插件**：未知子命令先 `~/.rxt/plugins/<name>/`，再 PATH 上的 `rxt-<name>`；同名不覆盖内置，除非 `rxt plugin install --force`
+- **插件**：未知子命令先 `~/.rxt/plugins/<name>/`，再 PATH 上的 `rxt-<name>`，再 recipe；同名不覆盖内置，除非 `--force`。0.9.4 起用 `rxt plugin new` 创建
 - **Windows 签名**：`rxt sign` 用本机自签 `CN=rxt-codesign`；`rxt build`、`upgrade`、插件安装后自动签。仍被 WDAC 拦时把 `~/.rxt/rxt-codesign.cer` 加进代码完整性签名者（策略级，不是再编一遍）
 
 #### plugin / 外挂
 
-未知子命令按 Git 风格注册，不把内置命令拆成独立二进制。
+未知子命令按 Git 风格注册，不把内置命令拆成独立二进制。正本：`docs/PLUGIN.md`。
 
 ```bash
-rxt plugin list                     # 内置名 + 已安装 + PATH 上的 rxt-*
-rxt plugin install C:\tools\foo.exe # 拷到 ~/.rxt/plugins/<name>/
-rxt plugin install .\foo.exe --name bar --force  # 覆盖同名内置
-rxt plugin which foo
-rxt plugin remove foo
-rxt foo --help                      # 调度 ~/.rxt/plugins/foo 或 PATH 上 rxt-foo
+rxt plugin new hello                         # 一键创建，立刻 rxt hello
+rxt plugin new hello --lang py --body 'print(1)'
+rxt plugin add hello --body 'echo hi'        # 无文件 → 创建
+rxt plugin add ./rxt-hello.sh                # 有文件 → 安装
+rxt plugin install ./myplug                  # 目录整树拷贝
+rxt plugin list                              # builtin + installed + PATH rxt-* + recipes
+rxt plugin show hello
+rxt plugin edit hello
+rxt plugin which hello
+rxt plugin remove hello
+rxt recipe add hello "echo \$1" && rxt hello world   # recipe 也可当子命令
+rxt --host huhu hello --any --flag           # 插件读 $RXT_HOST
 ```
 
-插件收到 `rxt <name>` 后面的参数；若带了全局 `--host` / `--group`，写入环境变量 `RXT_HOST` / `RXT_GROUP`。
+插件收到 `rxt <name>` 后面的参数；若带了全局 `--host` / `--group`，写入环境变量 `RXT_HOST` / `RXT_GROUP`。同名时插件优先于 recipe；盖内置必须 `--force`。
 
 #### sign（Windows）
 

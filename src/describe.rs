@@ -7,15 +7,12 @@ use clap::{Arg, ArgAction, Command, CommandFactory};
 use serde_json::{json, Value};
 
 pub fn run() -> anyhow::Result<()> {
-    let schema = build_schema();
+    let schema = schema_from_command(crate::tools_app::Cli::command());
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
 
-/// 从 clap 反射生成完整 schema
-fn build_schema() -> Value {
-    let mut cmd = crate::Cli::command();
-    // 让 clap 把所有子命令都展开
+pub fn schema_from_command(mut cmd: clap::Command) -> Value {
     cmd.build();
 
     let commands: Vec<Value> = cmd.get_subcommands().map(|sub| {
@@ -70,7 +67,7 @@ fn build_schema() -> Value {
     json!({
         "name": "rxt",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "Rust Codex Tools - AI's Cross-Platform IDE",
+        "description": "Remote eXtension Toolkit — tiny core, plugins for everything",
         "global_flags": [
             {"name": "host", "long": "host", "type": "Option<String>", "help": "远程主机(~/.rxt/hosts.toml)"},
             {"name": "group", "long": "group", "type": "Option<String>", "help": "远程主机组(批量执行)"},

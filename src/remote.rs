@@ -221,6 +221,44 @@ mod imp {
             Ok(stdout)
         }
 
+        /// 把远端命令的 stdout/stderr 直接流到本机，给插件 --host 转发用。
+        pub fn exec_forward(&self, cmd: &str) -> anyhow::Result<()> {
+            use std::io::Write;
+            let cmd = self.wrap_cmd(cmd);
+            let exit = self.rt.block_on(async {
+                let mut channel = self.handle.channel_open_session().await?;
+                channel.exec(true, cmd.as_bytes()).await?;
+                let mut stdout = std::io::stdout();
+                let mut stderr = std::io::stderr();
+                let mut exit_code = 0i32;
+                loop {
+                    let Some(msg) = channel.wait().await else {
+                        break;
+                    };
+                    match msg {
+                        ChannelMsg::Data { ref data } => {
+                            stdout.write_all(data)?;
+                            let _ = stdout.flush();
+                        }
+                        ChannelMsg::ExtendedData { ref data, .. } => {
+                            stderr.write_all(data)?;
+                            let _ = stderr.flush();
+                        }
+                        ChannelMsg::ExitStatus { exit_status } => {
+                            exit_code = exit_status as i32;
+                        }
+                        ChannelMsg::Eof | ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                Ok::<i32, anyhow::Error>(exit_code)
+            })?;
+            if exit != 0 {
+                anyhow::bail!("远端退出 {exit}");
+            }
+            Ok(())
+        }
+
         /// 远程是 Windows 吗?
         pub fn is_windows(&self) -> bool {
             matches!(self.os, RemoteOs::Windows)
@@ -527,6 +565,9 @@ mod stub {
             unreachable!()
         }
         pub fn exec(&self, _cmd: &str) -> anyhow::Result<String> {
+            unreachable!()
+        }
+        pub fn exec_forward(&self, _cmd: &str) -> anyhow::Result<()> {
             unreachable!()
         }
         pub fn exec_rxt(&self, _args: &[&str]) -> anyhow::Result<String> {

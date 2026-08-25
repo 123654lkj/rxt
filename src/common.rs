@@ -584,14 +584,11 @@ pub fn matches_gitignore_pub(pattern: &str, name: &str) -> bool {
 pub const DEFAULT_MAX_READ_BYTES: u64 = 32 * 1024 * 1024;
 
 const BINARY_EXTS: &[&str] = &[
-    "mkv", "mp4", "webm", "avi", "mov", "m4v", "ts", "m2ts", "flv", "wmv",
-    "mp3", "flac", "wav", "aac", "ogg", "m4a", "wma", "opus",
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "psd", "tiff", "heic",
-    "zip", "7z", "rar", "gz", "bz2", "xz", "zst", "iso", "tar",
-    "gguf", "bin", "exe", "dll", "so", "dylib", "wasm", "o", "a",
-    "db", "sqlite", "sqlite3", "parquet",
-    "woff", "woff2", "ttf", "otf", "eot",
-    "pdf", "docx", "xlsx", "pptx",
+    "mkv", "mp4", "webm", "avi", "mov", "m4v", "ts", "m2ts", "flv", "wmv", "mp3", "flac", "wav",
+    "aac", "ogg", "m4a", "wma", "opus", "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "psd",
+    "tiff", "heic", "zip", "7z", "rar", "gz", "bz2", "xz", "zst", "iso", "tar", "gguf", "bin",
+    "exe", "dll", "so", "dylib", "wasm", "o", "a", "db", "sqlite", "sqlite3", "parquet", "woff",
+    "woff2", "ttf", "otf", "eot", "pdf", "docx", "xlsx", "pptx",
 ];
 
 pub fn max_text_read_bytes() -> u64 {

@@ -7,15 +7,21 @@
 //!   rxt recipe add backup "rxt snapshot . --label daily; rxt git push"
 //!   rxt recipe add deploy "cargo build --release && cp target/release/rxt.exe /c/rxt/"
 //!   rxt recipe list                    # 列出所有
-//!   rxt recipe run backup              # 执行
+//!   rxt backup                         # 0.9.4：未知子命令回退到 recipe
+//!   rxt recipe run backup              # 执行（带横幅）
 //!   rxt recipe run deploy --extra "v2" # 传参
 //!   rxt recipe show backup             # 看内容
 //!   rxt recipe rm backup               # 删除
 //!   rxt recipe run backup --dry-run    # 只看会执行什么
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+thread_local! {
+    static RECIPES_DIR_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
 
 pub fn run(
     action: &str,
@@ -44,7 +50,7 @@ pub fn run(
                 }
             }
             run_args.extend_from_slice(args);
-            run_recipe(&store, n, &run_args, dry_run)
+            run_recipe(&store, n, &run_args, dry_run, false)
         }
         "show" | "cat" => {
             let n = name.ok_or_else(|| anyhow::anyhow!("需要 recipe 名"))?;
@@ -62,16 +68,94 @@ pub fn run(
     }
 }
 
+fn recipe_store_path() -> PathBuf {
+    if let Some(p) = RECIPES_DIR_OVERRIDE.with(|s| s.borrow().clone()) {
+        return p;
+    }
+    if let Ok(p) = std::env::var("RXT_RECIPES_DIR") {
+        return PathBuf::from(p);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rxt-recipes")
+}
+
 fn recipe_store() -> anyhow::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("无法定位 home"))?;
-    let store = home.join(".rxt-recipes");
+    let store = recipe_store_path();
     fs::create_dir_all(&store)?;
     Ok(store)
 }
 
 fn recipe_path(store: &Path, name: &str) -> PathBuf {
-    let ext = if cfg!(windows) { "cmd" } else { "sh" };
-    store.join(format!("{}.{}", sanitize(name), ext))
+    let safe = sanitize(name);
+    let preferred_ext = if cfg!(windows) { "cmd" } else { "sh" };
+    let preferred = store.join(format!("{safe}.{preferred_ext}"));
+    if preferred.is_file() {
+        return preferred;
+    }
+    let alt_ext = if cfg!(windows) { "sh" } else { "cmd" };
+    let alt = store.join(format!("{safe}.{alt_ext}"));
+    if alt.is_file() {
+        return alt;
+    }
+    preferred
+}
+
+/// 不创建目录。没有 recipe 时返回 None。
+pub fn resolve_path(name: &str) -> Option<PathBuf> {
+    if sanitize(name).is_empty() {
+        return None;
+    }
+    let p = recipe_path(&recipe_store_path(), name);
+    p.is_file().then_some(p)
+}
+
+pub fn list_entries() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let store = recipe_store_path();
+    let Ok(rd) = fs::read_dir(&store) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if !stem.is_empty() {
+                out.push((stem.to_string(), p));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 未知子命令回退：找到 recipe 则执行，返回 Ok(true)。
+pub fn try_run_as_command(name: &str, args: &[String]) -> anyhow::Result<bool> {
+    if name.is_empty() || resolve_path(name).is_none() {
+        return Ok(false);
+    }
+    let store = recipe_store()?;
+    run_recipe(&store, name, args, false, true)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) fn with_recipes_dir<F, R>(dir: &Path, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RECIPES_DIR_OVERRIDE.with(|s| *s.borrow_mut() = None);
+        }
+    }
+    let _g = Guard;
+    let _ = fs::create_dir_all(dir);
+    RECIPES_DIR_OVERRIDE.with(|s| *s.borrow_mut() = Some(dir.to_path_buf()));
+    f()
 }
 
 fn add(store: &Path, name: &str, content: &str) -> anyhow::Result<()> {
@@ -89,7 +173,8 @@ fn add(store: &Path, name: &str, content: &str) -> anyhow::Result<()> {
         lines,
         path.display()
     );
-    println!("\n运行: rxt recipe run {}", name);
+    println!("运行: rxt {name}");
+    println!("  或: rxt recipe run {name}");
     Ok(())
 }
 
@@ -135,10 +220,16 @@ fn list(store: &Path, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_recipe(store: &Path, name: &str, args: &[String], dry_run: bool) -> anyhow::Result<()> {
+fn run_recipe(
+    store: &Path,
+    name: &str,
+    args: &[String],
+    dry_run: bool,
+    quiet: bool,
+) -> anyhow::Result<()> {
     let path = recipe_path(store, name);
     if !path.exists() {
-        anyhow::bail!("recipe '{}' 不存在 (用 --list 查看)", name);
+        anyhow::bail!("recipe '{}' 不存在 (用 rxt recipe list 查看)", name);
     }
     let mut content = fs::read_to_string(&path)?;
     // 替换位置参数 $1 $2 ...
@@ -151,12 +242,19 @@ fn run_recipe(store: &Path, name: &str, args: &[String], dry_run: bool) -> anyho
         return Ok(());
     }
 
-    let (shell, flag) = if cfg!(windows) {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let (shell, flag) = if ext == "cmd" || ext == "bat" {
         ("cmd", "/C")
     } else {
         ("sh", "-c")
     };
-    println!("▶ 执行 recipe '{}':", name);
+    if !quiet {
+        println!("▶ 执行 recipe '{}':", name);
+    }
     let status = Command::new(shell)
         .arg(flag)
         .arg(&content)
@@ -164,7 +262,9 @@ fn run_recipe(store: &Path, name: &str, args: &[String], dry_run: bool) -> anyho
         .stderr(std::process::Stdio::inherit())
         .status()?;
     if status.success() {
-        println!("\n✓ recipe '{}' 完成", name);
+        if !quiet {
+            println!("\n✓ recipe '{}' 完成", name);
+        }
     } else {
         anyhow::bail!(
             "recipe '{}' 失败 (exit {})",
@@ -216,4 +316,36 @@ fn sanitize(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_run_missing_is_false() {
+        let dir = std::env::temp_dir().join(format!("rxt-recipe-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        with_recipes_dir(&dir, || {
+            assert!(!try_run_as_command("nope", &[]).unwrap());
+            assert!(resolve_path("nope").is_none());
+        });
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_then_try_run() {
+        let dir = std::env::temp_dir().join(format!("rxt-recipe-add-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        with_recipes_dir(&dir, || {
+            run("add", Some("t1"), Some("echo t1-ok"), &[], false, false).unwrap();
+            assert!(resolve_path("t1").is_some());
+            assert!(try_run_as_command("t1", &[]).unwrap());
+            let names: Vec<_> = list_entries().into_iter().map(|(n, _)| n).collect();
+            assert!(names.iter().any(|n| n == "t1"));
+        });
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

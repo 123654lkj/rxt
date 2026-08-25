@@ -7,6 +7,7 @@
 //! - `--form` 提交表单；`--browser` / `--cookie-jar` / `--cookie-json` 带登录态
 //! - 环境变量回退：`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER`
 //! - `--text` 抽正文 / `--links` 抽链接 / `--budget` 截断 / `-o` 落盘
+//! - 多个 URL 并行请求；`-j` 打包成一份 JSON
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -16,6 +17,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use rayon::prelude::*;
 use serde::Serialize;
 
 const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -23,7 +25,7 @@ const MAX_BODY: usize = 32 * 1024 * 1024;
 
 pub struct HttpOpts<'a> {
     pub method: &'a str,
-    pub url: Option<&'a str>,
+    pub urls: &'a [String],
     pub headers: &'a [String],
     pub data: Option<&'a str>,
     pub json_body: bool,
@@ -56,10 +58,10 @@ struct CookieRec {
 }
 
 pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
-    let method = opts.method.to_uppercase();
-    if method == "COOKIES" {
+    if opts.method.eq_ignore_ascii_case("cookies") {
         return dump_cookies(&opts);
     }
+    let (method, urls) = collect_urls(opts.method, opts.urls);
     let wrap = matches!(method.as_str(), "FORMS" | "CLI" | "WRAP" | "SCAN" | "APIS");
     let session_mode = method == "SESSION";
     let fetch_verb: &str = if wrap || session_mode {
@@ -68,12 +70,21 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         method.as_str()
     };
 
-    let url = opts
-        .url
-        .ok_or_else(|| anyhow::anyhow!("需要 URL，例如: rxt http GET https://example.com"))?;
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        anyhow::bail!("URL 必须以 http:// 或 https:// 开头");
+    if urls.is_empty() {
+        anyhow::bail!("需要 URL，例如: rxt http GET https://example.com https://example.org");
     }
+    for u in &urls {
+        if !is_http_url(u) {
+            anyhow::bail!("URL 必须以 http:// 或 https:// 开头: {u}");
+        }
+    }
+    if session_mode && urls.len() != 1 {
+        anyhow::bail!("session 只支持一个 URL");
+    }
+    if urls.len() > 1 {
+        return run_batch(&opts, &method, &urls, wrap, fetch_verb);
+    }
+    let url = urls[0].as_str();
 
     let cookie_env = cookie_env();
     let cookie_json = opts.cookie_json.or(cookie_env.json.as_deref());
@@ -378,6 +389,444 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn is_http_url(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+/// `rxt http https://a https://b` 时第一段会被 clap 当成 method。
+fn collect_urls(method: &str, rest: &[String]) -> (String, Vec<String>) {
+    if is_http_url(method) {
+        let mut urls = Vec::with_capacity(rest.len() + 1);
+        urls.push(method.to_string());
+        urls.extend(rest.iter().cloned());
+        ("GET".to_string(), urls)
+    } else {
+        (method.to_uppercase(), rest.to_vec())
+    }
+}
+
+struct FetchOut {
+    url: String,
+    host: String,
+    status: u16,
+    header_pairs: Vec<(String, String)>,
+    bytes: Vec<u8>,
+    merged_cookies: Vec<CookieRec>,
+    error: Option<String>,
+}
+
+fn run_batch(
+    opts: &HttpOpts<'_>,
+    method: &str,
+    urls: &[String],
+    wrap: bool,
+    fetch_verb: &str,
+) -> anyhow::Result<()> {
+    eprintln!("# batch {} urls parallel", urls.len());
+    let results = fetch_parallel(opts, fetch_verb, urls);
+
+    if let Some(path) = opts.output {
+        if path.exists() && !path.is_dir() {
+            anyhow::bail!("多 URL 时 -o 必须是目录: {}", path.display());
+        }
+        std::fs::create_dir_all(path)?;
+        for (i, item) in results.iter().enumerate() {
+            let name = file_stem_for_url(i, &item.url);
+            let dest = path.join(name);
+            std::fs::write(&dest, &item.bytes)?;
+            eprintln!(
+                "# 已写入 {} ({} bytes) HTTP {}",
+                dest.display(),
+                item.bytes.len(),
+                item.status
+            );
+        }
+    }
+
+    if let Some(jar) = opts.cookie_jar {
+        let mut all: Vec<CookieRec> = Vec::new();
+        for item in &results {
+            upsert_cookies(&mut all, &item.merged_cookies);
+        }
+        save_netscape(jar, &all)?;
+        eprintln!("# cookie-jar {} 条 → {}", all.len(), jar.display());
+    }
+
+    if wrap {
+        let timeout = Duration::from_secs(opts.timeout.max(1));
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let ua = opts.user_agent.unwrap_or(DEFAULT_UA);
+        for item in &results {
+            eprintln!("# {}", item.url);
+            if let Some(err) = &item.error {
+                eprintln!("# error {err}");
+                continue;
+            }
+            let raw = String::from_utf8_lossy(&item.bytes).into_owned();
+            if matches!(method, "SCAN" | "APIS") {
+                print_page_scan(
+                    &agent,
+                    ua,
+                    &item.merged_cookies,
+                    &item.url,
+                    &raw,
+                    opts.json_body,
+                    opts.budget,
+                    !opts.no_probe,
+                )?;
+            } else {
+                print_page_cli(method, &item.url, &raw, opts.json_body, opts.budget)?;
+            }
+        }
+        return batch_exit(&results);
+    }
+
+    if opts.json_body {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&batch_json(opts, &results))?
+        );
+        return batch_exit(&results);
+    }
+
+    for (i, item) in results.iter().enumerate() {
+        print_batch_text(opts, i + 1, results.len(), item);
+    }
+    batch_exit(&results)
+}
+
+fn batch_exit(results: &[FetchOut]) -> anyhow::Result<()> {
+    let fail = results.iter().filter(|r| r.error.is_some()).count();
+    if fail == 0 {
+        Ok(())
+    } else {
+        anyhow::bail!("批量 HTTP {fail}/{} 失败", results.len())
+    }
+}
+
+fn fetch_parallel(opts: &HttpOpts<'_>, fetch_verb: &str, urls: &[String]) -> Vec<FetchOut> {
+    let timeout = Duration::from_secs(opts.timeout.max(1));
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let jar_cookies = opts
+        .cookie_jar
+        .and_then(|p| load_netscape(p).ok())
+        .unwrap_or_default();
+    let extra = parse_cookie_args(opts.cookies);
+    urls.par_iter()
+        .map(|url| fetch_one(opts, url, fetch_verb, &agent, &jar_cookies, &extra))
+        .collect()
+}
+
+fn fetch_one(
+    opts: &HttpOpts<'_>,
+    url: &str,
+    fetch_verb: &str,
+    agent: &ureq::Agent,
+    jar_cookies: &[CookieRec],
+    extra: &[CookieRec],
+) -> FetchOut {
+    match fetch_one_inner(opts, url, fetch_verb, agent, jar_cookies, extra) {
+        Ok(out) => out,
+        Err(e) => FetchOut {
+            url: url.to_string(),
+            host: host_of(url).unwrap_or_default(),
+            status: 0,
+            header_pairs: Vec::new(),
+            bytes: Vec::new(),
+            merged_cookies: Vec::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+fn fetch_one_inner(
+    opts: &HttpOpts<'_>,
+    url: &str,
+    fetch_verb: &str,
+    agent: &ureq::Agent,
+    jar_cookies: &[CookieRec],
+    extra: &[CookieRec],
+) -> anyhow::Result<FetchOut> {
+    let cookie_env = cookie_env();
+    let cookie_json = opts.cookie_json.or(cookie_env.json.as_deref());
+    let browser = opts.browser.or(cookie_env.browser.as_deref());
+    let host = host_of(url).unwrap_or_default();
+    let browser_cookies = if let Some(b) = browser {
+        load_browser(b, Some(domain_candidates(&host)))?.1
+    } else {
+        Vec::new()
+    };
+    let json_cookies = if let Some(raw) = cookie_json {
+        load_cookie_json(raw, &host)?
+    } else {
+        Vec::new()
+    };
+    let merged = merge_cookies(
+        &merge_cookies(jar_cookies, &browser_cookies, extra),
+        &json_cookies,
+        &[],
+    );
+    let https = url.starts_with("https://");
+    let cookie_header = cookie_header_for(&merged, &host, path_of(url), https);
+
+    let auth_header = build_auth_header(opts.auth);
+    let form_body = encode_form_fields(opts.form);
+    let body_data: &str = if !form_body.is_empty() {
+        &form_body
+    } else {
+        opts.data.unwrap_or("")
+    };
+    let user_has_ua = has_header(opts.headers, "user-agent");
+    let user_has_cookie = has_header(opts.headers, "cookie");
+    let user_has_ct = has_header(opts.headers, "content-type");
+    let user_has_referer = has_header(opts.headers, "referer");
+    let ua = opts.user_agent.unwrap_or(DEFAULT_UA);
+    let auto_referer = origin_of(url).map(|o| format!("{o}/"));
+
+    macro_rules! paint {
+        ($builder:expr) => {{
+            let mut r = $builder;
+            if !user_has_ua {
+                r = r.header("User-Agent", ua);
+            }
+            if !user_has_cookie {
+                if let Some(ref c) = cookie_header {
+                    r = r.header("Cookie", c);
+                }
+            }
+            if !user_has_referer {
+                if let Some(ref rf) = auto_referer {
+                    r = r.header("Referer", rf.as_str());
+                }
+            }
+            if let Some(ref a) = auth_header {
+                r = r.header("Authorization", a);
+            }
+            for h in opts.headers {
+                let Some((k, v)) = h.split_once(':') else {
+                    anyhow::bail!("无效 Header: {}", h);
+                };
+                r = r.header(k.trim(), v.trim());
+            }
+            r
+        }};
+    }
+
+    let result = match fetch_verb {
+        "GET" => paint!(agent.get(url)).call(),
+        "DELETE" => paint!(agent.delete(url)).call(),
+        "HEAD" => paint!(agent.head(url)).call(),
+        "OPTIONS" => paint!(agent.options(url)).call(),
+        "POST" | "PUT" | "PATCH" => {
+            let mut r = match fetch_verb {
+                "POST" => paint!(agent.post(url)),
+                "PUT" => paint!(agent.put(url)),
+                _ => paint!(agent.patch(url)),
+            };
+            if !user_has_ct {
+                if opts.json_body && opts.form.is_empty() {
+                    r = r.header("Content-Type", "application/json");
+                } else {
+                    r = r.header("Content-Type", "application/x-www-form-urlencoded");
+                }
+            }
+            r.send(body_data)
+        }
+        _ => anyhow::bail!(
+            "不支持的方法: {}（GET POST PUT DELETE HEAD OPTIONS PATCH）",
+            opts.method
+        ),
+    };
+
+    let response = result.map_err(|e| anyhow::anyhow!("HTTP 请求失败: {}", e))?;
+    let status = response.status();
+    let header_pairs: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let mut bytes = Vec::new();
+    response
+        .into_parts()
+        .1
+        .into_reader()
+        .take(MAX_BODY as u64)
+        .read_to_end(&mut bytes)?;
+
+    let set_cookies: Vec<CookieRec> = header_pairs
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+        .filter_map(|(_, v)| parse_set_cookie(v, &host))
+        .collect();
+    let mut merged_out = merged;
+    upsert_cookies(&mut merged_out, &set_cookies);
+
+    Ok(FetchOut {
+        url: url.to_string(),
+        host,
+        status: status.as_u16(),
+        header_pairs,
+        bytes,
+        merged_cookies: merged_out,
+        error: None,
+    })
+}
+
+fn file_stem_for_url(i: usize, url: &str) -> String {
+    let host = host_of(url).unwrap_or_else(|| format!("url{}", i + 1));
+    let safe: String = host
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{:02}-{safe}", i + 1)
+}
+
+fn batch_json(opts: &HttpOpts<'_>, results: &[FetchOut]) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = results
+        .iter()
+        .map(|item| {
+            let ctype = content_type_of(&item.header_pairs);
+            let looks_text = is_probably_text(ctype, &item.bytes);
+            let mut body = if looks_text {
+                let raw = String::from_utf8_lossy(&item.bytes).into_owned();
+                if opts.text {
+                    html_to_text(&raw)
+                } else {
+                    raw
+                }
+            } else {
+                String::new()
+            };
+            if let Some(n) = opts.budget {
+                if body.len() > n {
+                    body = format!("{}…", &body[..body.floor_char_boundary(n)]);
+                }
+            }
+            let links = if opts.links && looks_text {
+                extract_links(&item.url, &String::from_utf8_lossy(&item.bytes))
+            } else {
+                Vec::new()
+            };
+            let mut obj = serde_json::json!({
+                "url": item.url,
+                "ok": item.error.is_none(),
+                "status": item.status,
+                "bytes": item.bytes.len(),
+                "content_type": ctype,
+                "binary": !looks_text && item.error.is_none(),
+                "error": item.error,
+            });
+            if looks_text {
+                obj["body"] = serde_json::Value::String(body);
+            }
+            if opts.links {
+                obj["links"] = serde_json::json!(links);
+            }
+            if opts.show_headers {
+                obj["headers"] = serde_json::json!(item.header_pairs);
+            }
+            obj
+        })
+        .collect();
+    serde_json::json!({
+        "count": results.len(),
+        "ok": results.iter().filter(|r| r.error.is_none()).count(),
+        "results": items,
+    })
+}
+
+fn print_batch_text(opts: &HttpOpts<'_>, i: usize, n: usize, item: &FetchOut) {
+    if let Some(err) = &item.error {
+        eprintln!("# {i}/{n} FAIL {}  {err}", item.url);
+        return;
+    }
+    if !opts.body_only {
+        eprintln!(
+            "# {i}/{n} HTTP {} {}  {} bytes",
+            item.status,
+            item.url,
+            item.bytes.len()
+        );
+    }
+    if opts.show_headers && !opts.body_only {
+        for (k, v) in &item.header_pairs {
+            eprintln!("{k}: {v}");
+        }
+        eprintln!();
+    }
+    let ctype = content_type_of(&item.header_pairs);
+    let looks_text = is_probably_text(ctype, &item.bytes);
+    if opts.links && looks_text {
+        let raw = String::from_utf8_lossy(&item.bytes);
+        let found = extract_links(&item.url, &raw);
+        println!("# links {} (base={})", found.len(), item.url);
+        for l in &found {
+            println!("{l}");
+        }
+        if !opts.text && opts.output.is_none() {
+            return;
+        }
+        if opts.text {
+            println!();
+        }
+    }
+    if opts.output.is_some() && opts.body_only && !opts.text && !opts.links {
+        return;
+    }
+    let raw = if looks_text {
+        String::from_utf8_lossy(&item.bytes).into_owned()
+    } else {
+        String::new()
+    };
+    let printable = if opts.text {
+        html_to_text(&raw)
+    } else if looks_text {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            serde_json::to_string_pretty(&parsed).unwrap_or(raw)
+        } else {
+            raw
+        }
+    } else {
+        format!("[binary {} bytes type={ctype}]", item.bytes.len())
+    };
+    let out = match opts.budget {
+        Some(n) if printable.len() > n => format!(
+            "{}…\n# truncated {}/{} chars",
+            &printable[..printable.floor_char_boundary(n)],
+            n,
+            printable.len()
+        ),
+        _ => printable,
+    };
+    print!("{out}");
+    if !out.ends_with('\n') {
+        println!();
+    }
+}
+
+fn content_type_of<'a>(headers: &'a [(String, String)]) -> &'a str {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("")
+}
+
 fn cookie_env() -> CookieEnv {
     CookieEnv {
         json: std::env::var("RXT_COOKIE_JSON")
@@ -495,7 +944,7 @@ fn dump_cookies(opts: &HttpOpts<'_>) -> anyhow::Result<()> {
     let browser = opts.browser.or(env.browser.as_deref()).ok_or_else(|| {
         anyhow::anyhow!("列 Cookie 需要 --browser chrome|edge|firefox|brave|auto（或 RXT_BROWSER）")
     })?;
-    let filter = opts.url.map(domain_from_input);
+    let filter = opts.urls.first().map(|s| domain_from_input(s));
     let domains = filter.clone().map(|d| domain_candidates(&d));
     let (src, mut recs) = load_browser(browser, domains)?;
     if let Some(d) = &filter {
@@ -629,10 +1078,7 @@ fn load_browser_python(
     }
     cmd.arg("-")
         .env("RXT_BROWSER_NAME", name)
-        .env(
-            "RXT_COOKIE_DOMAINS",
-            domains.unwrap_or_default().join(","),
-        )
+        .env("RXT_COOKIE_DOMAINS", domains.unwrap_or_default().join(","))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1897,6 +2343,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn collect_urls_promotes_bare_url_method() {
+        let rest = vec!["https://b.example/".into()];
+        let (m, u) = collect_urls("https://a.example/", &rest);
+        assert_eq!(m, "GET");
+        assert_eq!(u, vec!["https://a.example/", "https://b.example/"]);
+        let (m2, u2) = collect_urls("Post", &rest);
+        assert_eq!(m2, "POST");
+        assert_eq!(u2, rest);
+    }
+
+    fn spawn_plain(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = std::io::Read::read(&mut s, &mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+            }
+        });
+        (format!("http://{addr}/"), h)
+    }
+
+    fn test_opts<'a>(urls: &'a [String]) -> HttpOpts<'a> {
+        HttpOpts {
+            method: "GET",
+            urls,
+            headers: &[],
+            data: None,
+            json_body: false,
+            auth: None,
+            timeout: 5,
+            show_headers: false,
+            body_only: false,
+            output: None,
+            browser: None,
+            cookie_jar: None,
+            cookies: &[],
+            user_agent: None,
+            text: false,
+            links: false,
+            budget: None,
+            form: &[],
+            no_probe: true,
+            cookie_json: None,
+        }
+    }
+
+    #[test]
+    fn batch_two_local_servers() {
+        let (u1, t1) = spawn_plain("hello-a");
+        let (u2, t2) = spawn_plain("hello-b");
+        let urls = vec![u1, u2];
+        let opts = test_opts(&urls);
+        let out = fetch_parallel(&opts, "GET", &urls);
+        let _ = t1.join();
+        let _ = t2.join();
+        assert_eq!(out.len(), 2);
+        assert!(
+            out.iter().all(|x| x.error.is_none()),
+            "{:?}",
+            out.iter().map(|x| x.error.clone()).collect::<Vec<_>>()
+        );
+        let bodies: Vec<String> = out
+            .iter()
+            .map(|x| String::from_utf8_lossy(&x.bytes).into_owned())
+            .collect();
+        assert!(bodies.iter().any(|b| b.contains("hello-a")), "{bodies:?}");
+        assert!(bodies.iter().any(|b| b.contains("hello-b")), "{bodies:?}");
+        let js = batch_json(&opts, &out);
+        assert_eq!(js["count"], 2);
+        assert_eq!(js["ok"], 2);
+    }
+
+    #[test]
     fn host_parse() {
         assert_eq!(
             host_of("https://www.GitHub.com/foo").as_deref(),
@@ -2131,9 +2656,7 @@ mod tests {
         assert!(
             probe_path_score("/api/v1/admin/h5/login/v2") > probe_path_score("/apaas/api/rms/x")
         );
-        assert!(
-            probe_path_score("/api/v1/accounts/token") > probe_path_score("/api/cem/c/launch")
-        );
+        assert!(probe_path_score("/api/v1/accounts/token") > probe_path_score("/api/cem/c/launch"));
     }
 
     #[test]

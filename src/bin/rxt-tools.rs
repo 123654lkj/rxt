@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    rxt::core_cli::run()
+    rxt::tools_app::run()
 }

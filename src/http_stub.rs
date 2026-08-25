@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub struct HttpOpts<'a> {
     pub method: &'a str,
-    pub url: Option<&'a str>,
+    pub urls: &'a [String],
     pub headers: &'a [String],
     pub data: Option<&'a str>,
     pub json_body: bool,

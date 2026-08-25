@@ -39,11 +39,11 @@ pub fn run(
         println!("⚠ 工作区有未提交改动 ({} 处)", dirty.lines().count());
     }
 
-    // 3. 编译 Linux
-    println!("\n🔨 编译 Linux (x86_64-unknown-linux-gnu)...");
+    // 3. 编译 Linux（核心 rxt + 标准库 rxt-tools）
+    println!("\n🔨 编译 Linux (rxt + rxt-tools)...");
     let build = Command::new("cargo")
         .current_dir(&repo_path)
-        .args(["build", "--release"])
+        .args(["build", "--release", "--bin", "rxt", "--bin", "rxt-tools"])
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -62,7 +62,16 @@ pub fn run(
     let win_target = "x86_64-pc-windows-gnu";
     let win_build = Command::new("cargo")
         .current_dir(&repo_path)
-        .args(["build", "--release", "--target", win_target])
+        .args([
+            "build",
+            "--release",
+            "--target",
+            win_target,
+            "--bin",
+            "rxt",
+            "--bin",
+            "rxt-tools",
+        ])
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status();
@@ -75,9 +84,17 @@ pub fn run(
     }
     let has_windows = win_bin.exists();
 
-    // 5. 安装本地 (Linux)
+    // 5. 安装本地 (Linux) + 标准库插件
     println!("\n📍 安装本地...");
     install_local(&linux_bin)?;
+    let tools = repo_path.join("target/release/rxt-tools");
+    if tools.exists() {
+        install_tools(&tools)?;
+        match crate::plugin::seed_all(true) {
+            Ok(n) => println!("  ✓ 标准库插件 {n} 个"),
+            Err(e) => println!("  ⚠ seed 失败: {e}"),
+        }
+    }
 
     // 6. 部署远程
     if !no_deploy {
@@ -116,6 +133,18 @@ fn install_local(linux_bin: &PathBuf) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&local_bin); // 先删(有些情况下 rename 不能覆盖)
     std::fs::rename(&tmp, &local_bin)?;
     println!("  ✓ {}", local_bin.display());
+    let tools_sib = linux_bin
+        .parent()
+        .map(|p| p.join("rxt-tools"))
+        .unwrap_or_else(|| PathBuf::from("rxt-tools"));
+    if tools_sib.is_file() {
+        let tools_local = home.join(".local/bin/rxt-tools");
+        let tmp = tools_local.with_extension("new");
+        std::fs::copy(&tools_sib, &tmp)?;
+        let _ = std::fs::remove_file(&tools_local);
+        std::fs::rename(&tmp, &tools_local)?;
+        println!("  ✓ {}", tools_local.display());
+    }
 
     // /usr/local/bin (需 sudo)
     let sudo_install = Command::new("bash")
@@ -132,6 +161,24 @@ fn install_local(linux_bin: &PathBuf) -> anyhow::Result<()> {
     } else {
         println!("  ⚠ /usr/local/bin 安装失败 (sudo 密码? 跳过)");
     }
+    Ok(())
+}
+
+fn install_tools(tools: &PathBuf) -> anyhow::Result<()> {
+    let dest = crate::plugin::tools_bin();
+    std::fs::create_dir_all(crate::plugin::lib_dir())?;
+    if dest.exists() {
+        let _ = std::fs::remove_file(&dest);
+    }
+    std::fs::copy(tools, &dest)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(&dest)?.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&dest, perm)?;
+    }
+    println!("  ✓ {}", dest.display());
     Ok(())
 }
 
