@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1633,9 +1633,57 @@ fn default_session_root() -> PathBuf {
         .join("http-session")
 }
 
+fn path_has_parent_dir(p: &Path) -> bool {
+    p.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+fn session_path_is_link(p: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(p) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn validate_session_path(dir: &Path) -> anyhow::Result<()> {
+    if dir.as_os_str().is_empty() {
+        anyhow::bail!("会话路径为空");
+    }
+    if path_has_parent_dir(dir) {
+        anyhow::bail!("会话路径不能包含 ..：{}", dir.display());
+    }
+    if session_path_is_link(dir) {
+        anyhow::bail!("拒绝符号链接/junction 会话目录：{}", dir.display());
+    }
+    Ok(())
+}
+
+fn paths_under(dir: &Path, root: &Path) -> bool {
+    dir == root || dir.starts_with(root)
+}
+
 fn is_under_default_session_root(dir: &Path) -> bool {
+    if path_has_parent_dir(dir) {
+        return false;
+    }
     let root = default_session_root();
-    dir == root.as_path() || dir.starts_with(&root)
+    if path_has_parent_dir(&root) {
+        return false;
+    }
+    match (std::fs::canonicalize(&root), std::fs::canonicalize(dir)) {
+        (Ok(root), Ok(dir)) => paths_under(&dir, &root),
+        _ => paths_under(dir, &root),
+    }
 }
 
 fn sentinel_path(dir: &Path) -> PathBuf {
@@ -1673,6 +1721,7 @@ fn dir_has_foreign_entries(dir: &Path) -> bool {
 
 /// 会话目录：写哨兵；chmod 0700 只作用于会话目录本身 / `~/.rxt/http-session`。
 pub(super) fn secure_mkdir(dir: &Path) -> anyhow::Result<()> {
+    validate_session_path(dir)?;
     if dir.exists() && !dir.is_dir() {
         anyhow::bail!("{} 不是目录", dir.display());
     }
@@ -1722,6 +1771,7 @@ fn secure_wipe(path: &Path) {
 }
 
 pub(super) fn purge_session(dir: &Path) -> anyhow::Result<()> {
+    validate_session_path(dir)?;
     if !sentinel_ok(dir) {
         anyhow::bail!(
             "拒绝 purge：{} 没有会话哨兵 {SENTINEL_NAME}（避免误删项目文件）",
@@ -3854,6 +3904,111 @@ mod tests {
             "precious"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn under_root_rejects_parent_dir_escape() {
+        let escaped = default_session_root()
+            .join("x")
+            .join("..")
+            .join("..")
+            .join("Documents");
+        assert!(path_has_parent_dir(&escaped));
+        assert!(
+            !is_under_default_session_root(&escaped),
+            "词法 starts_with 不得把 ../ 当成会话根内: {}",
+            escaped.display()
+        );
+        let nested = default_session_root().join("default");
+        assert!(!path_has_parent_dir(&nested));
+        assert!(
+            is_under_default_session_root(&nested),
+            "正常会话名仍算根内: {}",
+            nested.display()
+        );
+    }
+
+    #[test]
+    fn session_mkdir_rejects_dotdot_escape() {
+        let name = format!("rxt-http-should-not-exist-{}", std::process::id());
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let marker = home.join(&name);
+        let escaped = default_session_root()
+            .join("x")
+            .join("..")
+            .join("..")
+            .join(&name);
+        let err = secure_mkdir(&escaped).unwrap_err().to_string();
+        assert!(err.contains(".."), "{err}");
+        assert!(!marker.exists(), "不得在 HOME 下创建 {}", marker.display());
+        assert!(!marker.join(SENTINEL_NAME).exists());
+        let _ = std::fs::remove_dir_all(&marker);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_dir_rejects_symlink() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-sess-link-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("real-proj");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("Cargo.toml"), b"[package]\nname=\"x\"\n").unwrap();
+        std::fs::write(real.join("page.html"), b"<html>keep</html>").unwrap();
+        let link = tmp.join("sess-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = secure_mkdir(&link).unwrap_err().to_string();
+        assert!(
+            err.contains("符号链接") || err.contains("junction") || err.contains("链接"),
+            "{err}"
+        );
+        assert!(!real.join(SENTINEL_NAME).exists());
+        assert_eq!(
+            std::fs::read_to_string(real.join("Cargo.toml")).unwrap(),
+            "[package]\nname=\"x\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(real.join("page.html")).unwrap(),
+            "<html>keep</html>"
+        );
+        let purge_err = purge_session(&link).unwrap_err().to_string();
+        assert!(
+            purge_err.contains("符号链接")
+                || purge_err.contains("junction")
+                || purge_err.contains("链接"),
+            "{purge_err}"
+        );
+        assert!(real.join("page.html").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn session_dir_rejects_junction() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-sess-junc-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("real-proj");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("Cargo.toml"), b"[package]\nname=\"x\"\n").unwrap();
+        let link = tmp.join("sess-link");
+        if std::os::windows::fs::symlink_dir(&real, &link).is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+        let err = secure_mkdir(&link).unwrap_err().to_string();
+        assert!(
+            err.contains("符号链接") || err.contains("junction") || err.contains("链接"),
+            "{err}"
+        );
+        assert!(!real.join(SENTINEL_NAME).exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

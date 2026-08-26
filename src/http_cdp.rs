@@ -509,11 +509,13 @@ fn process_image(pid: u32) -> Option<String> {
 fn image_is_killable(image: &str) -> bool {
     let norm = image.replace('\\', "/");
     let name = norm
+        .trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(&norm)
         .to_ascii_lowercase();
-    name.contains("lightpanda") || name.contains("rxt-http") || name.starts_with("rxt-tools")
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(stem, "lightpanda" | "rxt-http" | "rxt-tools")
 }
 
 #[cfg(windows)]
@@ -1197,9 +1199,14 @@ mod tests {
         assert!(image_is_killable(r"C:\Users\a\.rxt\lib\lightpanda.exe"));
         assert!(image_is_killable("/usr/local/bin/rxt-tools"));
         assert!(image_is_killable("rxt-http.exe"));
+        assert!(image_is_killable("LIGHTPANDA.EXE"));
         assert!(!image_is_killable("/usr/bin/firefox"));
         assert!(!image_is_killable("C:\\Windows\\System32\\notepad.exe"));
         assert!(!image_is_killable("/usr/bin/rxt"));
+        assert!(!image_is_killable("/opt/not-lightpanda"));
+        assert!(!image_is_killable("/tmp/lightpanda-wrapper"));
+        assert!(!image_is_killable("rxt-tools-backup"));
+        assert!(!image_is_killable("lightpanda.old.exe"));
     }
 
     #[test]
