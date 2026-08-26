@@ -20,8 +20,8 @@ default = ["remote", "xz", "http"]
 remote = ["russh", "tokio", "shellexpand"]
 # .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
 xz = ["xz2"]
-# HTTP 客户端 + 星枢 mem（ureq）+ 页面 JS 引擎（Lightpanda CDP，无 TLS）。
-http = ["ureq", "tungstenite"]
+# HTTP 客户端 + 星枢 mem（ureq）+ 页面 JS 引擎（Lightpanda / 本机 Edge·Chrome CDP）。
+http = ["ureq", "tungstenite", "rusqlite", "aes-gcm"]
 # 读本机浏览器 Cookie（rookie/libesedb，Windows 常编不过）。
 cookies = ["http", "rookie"]
 # 旧编译命令兼容：http + cookies
@@ -46,6 +46,8 @@ dirs = "5"
 shellexpand = { version = "3", optional = true }
 ureq = { version = "3.3.0", features = ["json"], optional = true }
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+aes-gcm = { version = "0.10", optional = true }
 rookie = { version = "0.5.6", optional = true }
 rayon = "1"
 regex = "1"
@@ -60,4 +62,4 @@ russh = { version = "0.61.2", default-features = false, features = ["rsa", "flat
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_JobObjects"] }

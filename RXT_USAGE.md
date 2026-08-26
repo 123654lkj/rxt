@@ -250,7 +250,7 @@ rxt ps --host huhu --top 5          # 远程查看
 #### http 详解
 
 ```bash
-# 页面会话（默认 Lightpanda JS 引擎，不跑 Chrome）
+# 页面会话（Linux/macOS: Lightpanda；Windows: 本机 Edge/Chrome CDP）
 rxt http open https://example.com                 # 打开（执行 JS），列出 @eN
 rxt http snap                                     # 可交互元素
 rxt http read / rxt http read @e1                 # 正文 / 元素
@@ -262,6 +262,9 @@ rxt http wait '#app'                              # 等选择器或 JS 表达式
 rxt http close                                    # 关掉引擎（带 hold secret，清元数据/子进程）
 rxt http purge                                    # 只删会话白名单文件；无哨兵 .rxt-http-session 则拒绝
 rxt http --engine static open URL                 # 强制纯 HTTP（无 JS）
+rxt http --engine edge open URL                   # 强制本机 Edge/Chrome（Windows 默认走这条）
+# RXT_HTTP_BROWSER=C:\...\msedge.exe  指定浏览器
+# Cookie：原生读 Firefox sqlite，不必 rookiepy；Chrome/Edge 127+ 磁盘值是 v20，请 firefox 或 --cookie-json
 rxt http import --browser firefox                 # Firefox
 rxt http import --browser edge                    # Edge（127+ 常需管理员）
 rxt http import --browser tabbit                  # Tabbit（扫 User Data）

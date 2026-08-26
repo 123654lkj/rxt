@@ -34,6 +34,6 @@ pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {
     anyhow::bail!(
         "本 rxt 二进制未启用 http 功能。\n\
          编译: cargo build --release --features http\n\
-         读浏览器 Cookie：`--browser`（Python rookiepy 读磁盘，不打开窗口）或 `--cookie-json`。"
+         读浏览器 Cookie：`--browser firefox`（原生 sqlite）或 `--cookie-json`。"
     )
 }

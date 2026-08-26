@@ -414,7 +414,7 @@ pub enum Command {
         session: Option<String>,
         #[arg(
             long = "engine",
-            help = "页面引擎: auto|js|static（默认 auto=有 Lightpanda 就跑 JS。环境变量 RXT_HTTP_ENGINE）"
+            help = "页面引擎: auto|js|static|edge|chrome（默认 auto：有 Lightpanda 用它，否则本机 Edge/Chrome。环境变量 RXT_HTTP_ENGINE / RXT_HTTP_BROWSER）"
         )]
         engine: Option<String>,
         #[arg(

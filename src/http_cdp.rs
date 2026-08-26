@@ -1,4 +1,4 @@
-//! Lightpanda CDP — 同一套 CLI 后面的 JS 引擎。不启动 Chrome。
+//! JS 引擎：Lightpanda（Linux/macOS）或本机 Edge/Chrome CDP（Windows 无 Lightpanda 时）。
 
 use super::*;
 use serde_json::{json, Value};
@@ -12,6 +12,8 @@ use tungstenite::protocol::WebSocket;
 use tungstenite::Message;
 
 static ENGINE_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+#[cfg(windows)]
+static ENGINE_JOB: Mutex<Option<usize>> = Mutex::new(None);
 
 const HOOK_JS: &str = r#"
 window.__rxt_net = window.__rxt_net || [];
@@ -116,6 +118,16 @@ pub(super) fn available() -> bool {
 }
 
 fn find_bin() -> Option<PathBuf> {
+    let prefer = std::env::var("RXT_HTTP_ENGINE")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(prefer.as_str(), "edge" | "chrome" | "chromium") {
+        return find_chromium_bin();
+    }
+    find_lightpanda().or_else(find_chromium_bin)
+}
+
+fn find_lightpanda() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("RXT_LIGHTPANDA") {
         let p = PathBuf::from(p);
         if p.is_file() {
@@ -138,12 +150,87 @@ fn find_bin() -> Option<PathBuf> {
     which("lightpanda")
 }
 
+fn find_chromium_bin() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("RXT_HTTP_BROWSER") {
+        let p = PathBuf::from(p.trim());
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    for c in chromium_candidates() {
+        if c.is_file() {
+            return Some(c);
+        }
+    }
+    which("msedge")
+        .or_else(|| which("chrome"))
+        .or_else(|| which("google-chrome"))
+        .or_else(|| which("chromium"))
+        .or_else(|| which("chromium-browser"))
+}
+
+fn chromium_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    #[cfg(windows)]
+    {
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let pfs = [
+            std::env::var_os("PROGRAMFILES").map(PathBuf::from),
+            std::env::var_os("PROGRAMFILES(X86)").map(PathBuf::from),
+            Some(PathBuf::from(r"C:\Program Files")),
+            Some(PathBuf::from(r"C:\Program Files (x86)")),
+        ];
+        for pf in pfs.into_iter().flatten() {
+            v.push(pf.join(r"Microsoft\Edge\Application\msedge.exe"));
+            v.push(pf.join(r"Google\Chrome\Application\chrome.exe"));
+        }
+        if let Some(local) = local {
+            v.push(local.join(r"Microsoft\Edge\Application\msedge.exe"));
+            v.push(local.join(r"Google\Chrome\Application\chrome.exe"));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        v.extend([
+            PathBuf::from("/usr/bin/microsoft-edge"),
+            PathBuf::from("/usr/bin/microsoft-edge-stable"),
+            PathBuf::from("/usr/bin/google-chrome"),
+            PathBuf::from("/usr/bin/google-chrome-stable"),
+            PathBuf::from("/usr/bin/chromium"),
+            PathBuf::from("/usr/bin/chromium-browser"),
+        ]);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        v.extend([
+            PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]);
+    }
+    v
+}
+
+fn is_lightpanda_bin(p: &Path) -> bool {
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("lightpanda"))
+        .unwrap_or(false)
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let p = dir.join(name);
         if p.is_file() {
             return Some(p);
+        }
+        #[cfg(windows)]
+        {
+            let p = dir.join(format!("{name}.exe"));
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
     None
@@ -165,6 +252,8 @@ struct ServeMeta {
     pid: u32,
     #[serde(default)]
     heap_mb: u32,
+    #[serde(default)]
+    kind: String,
 }
 
 fn heap_mb() -> u32 {
@@ -207,36 +296,82 @@ fn pid_alive(pid: u32) -> bool {
 
 pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
     let want_heap = heap_mb();
+    let bin = find_bin().ok_or_else(|| {
+        anyhow::anyhow!(
+            "没有 JS 引擎。Linux/macOS: 把 Lightpanda 放到 ~/.rxt/lib/lightpanda；\n\
+             Windows: 使用已安装的 Edge/Chrome（或 RXT_HTTP_BROWSER=路径）。\n\
+             静态模式: RXT_HTTP_ENGINE=static"
+        )
+    })?;
+    let kind = if is_lightpanda_bin(&bin) {
+        "lightpanda"
+    } else {
+        "chromium"
+    };
     let meta_p = serve_meta_path();
     if let Ok(raw) = std::fs::read_to_string(&meta_p) {
         if let Ok(m) = serde_json::from_str::<ServeMeta>(&raw) {
-            if serve_alive(m.port, m.pid) && m.heap_mb == want_heap {
+            let kind_ok = m.kind.is_empty() || m.kind == kind;
+            if serve_alive(m.port, m.pid) && m.heap_mb == want_heap && kind_ok {
                 return Ok((m.port, m.pid));
             }
-            if serve_alive(m.port, m.pid) && m.heap_mb != want_heap {
+            if serve_alive(m.port, m.pid) && (!kind_ok || m.heap_mb != want_heap) {
                 kill_pid(m.pid);
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
     }
-    let bin = find_bin().ok_or_else(|| {
-        anyhow::anyhow!(
-            "没有 Lightpanda。放到 ~/.rxt/lib/lightpanda 或设 RXT_LIGHTPANDA。静态引擎：RXT_HTTP_ENGINE=static"
-        )
-    })?;
     let port = free_port()?;
     std::fs::create_dir_all(rxt_dir())?;
-    let log = rxt_dir().join("lightpanda.log");
+    let log = rxt_dir().join("http-engine.log");
     let logf = std::fs::File::create(&log)?;
-    let heap = want_heap.to_string();
-    let mut child = Command::new(&bin)
+    let mut child = if kind == "lightpanda" {
+        spawn_lightpanda(&bin, port, want_heap, &logf)?
+    } else {
+        spawn_chromium(&bin, port, want_heap, &logf)?
+    };
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        attach_kill_job(pid);
+    }
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if serve_alive(port, pid) {
+            adopt_engine_child(child);
+            let m = ServeMeta {
+                port,
+                pid,
+                heap_mb: want_heap,
+                kind: kind.into(),
+            };
+            std::fs::write(&meta_p, serde_json::to_vec_pretty(&m)?)?;
+            eprintln!("# js engine {kind} pid={pid} port={port} heap={want_heap}MB");
+            return Ok((port, pid));
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    anyhow::bail!("JS 引擎未在 :{port} 起来。日志 {}", log.display())
+}
+
+fn spawn_lightpanda(
+    bin: &Path,
+    port: u16,
+    heap: u32,
+    logf: &std::fs::File,
+) -> anyhow::Result<Child> {
+    let heap = heap.to_string();
+    let port = port.to_string();
+    Command::new(bin)
         .env("LIGHTPANDA_DISABLE_TELEMETRY", "true")
         .args([
             "serve",
             "--host",
             "127.0.0.1",
             "--port",
-            &port.to_string(),
+            &port,
             "--log-level",
             "warn",
             "--disable-metrics",
@@ -247,33 +382,74 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(logf.try_clone()?))
-        .stderr(Stdio::from(logf))
+        .stderr(Stdio::from(logf.try_clone()?))
         .spawn()
-        .map_err(|e| anyhow::anyhow!("启动 lightpanda 失败: {e}"))?;
-    let pid = child.id();
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
-        if serve_alive(port, pid) {
-            adopt_engine_child(child);
-            let m = ServeMeta {
-                port,
-                pid,
-                heap_mb: want_heap,
-            };
-            std::fs::write(&meta_p, serde_json::to_vec_pretty(&m)?)?;
-            eprintln!("# js engine lightpanda pid={pid} port={port} heap={want_heap}MB");
-            return Ok((port, pid));
-        }
-        std::thread::sleep(Duration::from_millis(80));
+        .map_err(|e| anyhow::anyhow!("启动 lightpanda 失败: {e}"))
+}
+
+fn spawn_chromium(bin: &Path, port: u16, heap: u32, logf: &std::fs::File) -> anyhow::Result<Child> {
+    let profile = rxt_dir().join("http-cdp-profile");
+    std::fs::create_dir_all(&profile)?;
+    let port = port.to_string();
+    let heap_flag = format!("--js-flags=--max-old-space-size={heap}");
+    let user_data = format!("--user-data-dir={}", profile.display());
+    let dbg = format!("--remote-debugging-port={port}");
+    let mut cmd = Command::new(bin);
+    cmd.args([
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--mute-audio",
+        "--hide-scrollbars",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
+        &dbg,
+        &user_data,
+        &heap_flag,
+        "about:blank",
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::from(logf.try_clone()?))
+    .stderr(Stdio::from(logf.try_clone()?));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let _ = child.kill();
-    let _ = child.wait();
-    anyhow::bail!("lightpanda 未在 :{port} 起来。日志 {}", log.display())
+    cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("启动 {} 失败: {e}", bin.display()))
 }
 
 fn free_port() -> anyhow::Result<u16> {
     let l = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(l.local_addr()?.port())
+}
+
+fn ws_path_from_debugger_url(ws: &str) -> String {
+    let rest = ws.split("://").nth(1).unwrap_or(ws);
+    rest.find('/')
+        .map(|i| rest[i..].to_string())
+        .unwrap_or_else(|| "/".into())
+}
+
+fn cdp_ws_path(port: u16) -> String {
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    if let Ok(resp) = ureq::get(&url).header("User-Agent", "rxt").call() {
+        if let Ok(body) = resp.into_body().read_to_string() {
+            if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|x| x.as_str()) {
+                    if !ws.is_empty() {
+                        return ws_path_from_debugger_url(ws);
+                    }
+                }
+            }
+        }
+    }
+    "/".into()
 }
 
 pub(super) struct Cdp {
@@ -283,6 +459,7 @@ pub(super) struct Cdp {
 
 impl Cdp {
     pub(super) fn connect(port: u16) -> anyhow::Result<Self> {
+        let path = cdp_ws_path(port);
         let stream = TcpStream::connect(("127.0.0.1", port))
             .map_err(|e| anyhow::anyhow!("连 CDP :{port} 失败: {e}"))?;
         stream.set_read_timeout(Some(Duration::from_secs(20)))?;
@@ -290,7 +467,7 @@ impl Cdp {
         let key = tungstenite::handshake::client::generate_key();
         let req = tungstenite::http::Request::builder()
             .method("GET")
-            .uri(format!("ws://127.0.0.1:{port}/"))
+            .uri(format!("ws://127.0.0.1:{port}{path}"))
             .header("Host", format!("127.0.0.1:{port}"))
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
@@ -515,7 +692,16 @@ fn image_is_killable(image: &str) -> bool {
         .unwrap_or(&norm)
         .to_ascii_lowercase();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);
-    matches!(stem, "lightpanda" | "rxt-http" | "rxt-tools")
+    matches!(
+        stem,
+        "lightpanda"
+            | "rxt-http"
+            | "rxt-tools"
+            | "msedge"
+            | "chrome"
+            | "chromium"
+            | "google-chrome"
+    )
 }
 
 #[cfg(windows)]
@@ -563,6 +749,63 @@ fn kill_pid(pid: u32) {
     #[cfg(windows)]
     {
         windows_terminate(pid);
+    }
+}
+
+#[cfg(windows)]
+fn attach_kill_job(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() || job == (-1isize as _) {
+            return;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            return;
+        }
+        let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        if proc.is_null() || proc == (-1isize as _) {
+            CloseHandle(job);
+            return;
+        }
+        let assigned = AssignProcessToJobObject(job, proc);
+        CloseHandle(proc);
+        if assigned == 0 {
+            CloseHandle(job);
+            return;
+        }
+        let mut g = ENGINE_JOB.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = g.take() {
+            CloseHandle(old as _);
+        }
+        *g = Some(job as usize);
+    }
+}
+
+#[cfg(windows)]
+fn close_kill_job() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    if let Some(h) = ENGINE_JOB.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        unsafe {
+            CloseHandle(h as _);
+        }
     }
 }
 
@@ -1018,6 +1261,10 @@ pub(super) fn close_js() -> anyhow::Result<()> {
         let _ = c.kill();
         let _ = c.wait();
     }
+    #[cfg(windows)]
+    {
+        close_kill_job();
+    }
     if let Some(home) = dirs::home_dir() {
         let sess = home.join(".rxt").join("http-session");
         if let Ok(rd) = std::fs::read_dir(sess) {
@@ -1159,8 +1406,11 @@ fn pull_cookies(cdp: &mut Cdp, sid: &str) -> anyhow::Result<Vec<CookieRec>> {
 }
 
 pub(super) fn load_engine(dir: &Path) -> anyhow::Result<EngineState> {
-    let raw = std::fs::read_to_string(dir.join("engine.json"))
-        .map_err(|_| anyhow::anyhow!("当前会话不是 JS 引擎。rxt http open 会自动用 Lightpanda"))?;
+    let raw = std::fs::read_to_string(dir.join("engine.json")).map_err(|_| {
+        anyhow::anyhow!(
+            "当前会话不是 JS 引擎。rxt http open 会自动选 Lightpanda 或本机 Edge/Chrome"
+        )
+    })?;
     Ok(serde_json::from_str(&raw)?)
 }
 
@@ -1173,7 +1423,7 @@ pub(super) fn engine_wanted(opts: &HttpOpts<'_>) -> bool {
         .to_ascii_lowercase();
     match v.as_str() {
         "static" | "http" | "off" | "0" => false,
-        "js" | "lightpanda" | "on" | "1" => true,
+        "js" | "lightpanda" | "edge" | "chrome" | "chromium" | "on" | "1" => find_bin().is_some(),
         _ => available(),
     }
 }
@@ -1200,6 +1450,12 @@ mod tests {
         assert!(image_is_killable("/usr/local/bin/rxt-tools"));
         assert!(image_is_killable("rxt-http.exe"));
         assert!(image_is_killable("LIGHTPANDA.EXE"));
+        assert!(image_is_killable(
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+        ));
+        assert!(image_is_killable(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        ));
         assert!(!image_is_killable("/usr/bin/firefox"));
         assert!(!image_is_killable("C:\\Windows\\System32\\notepad.exe"));
         assert!(!image_is_killable("/usr/bin/rxt"));
@@ -1207,6 +1463,15 @@ mod tests {
         assert!(!image_is_killable("/tmp/lightpanda-wrapper"));
         assert!(!image_is_killable("rxt-tools-backup"));
         assert!(!image_is_killable("lightpanda.old.exe"));
+    }
+
+    #[test]
+    fn ws_path_from_chrome_debugger_url() {
+        assert_eq!(
+            ws_path_from_debugger_url("ws://127.0.0.1:9222/devtools/browser/abc"),
+            "/devtools/browser/abc"
+        );
+        assert_eq!(ws_path_from_debugger_url("ws://127.0.0.1:9222/"), "/");
     }
 
     #[test]

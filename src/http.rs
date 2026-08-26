@@ -7,6 +7,8 @@
 //! - `session`：探测登录 Cookie 是否仍有效（过期 exit 2）
 //! - `--form` 提交表单；`--browser` / `--cookie-jar` / `--cookie-json` 带登录态
 //! - `--select` 抽 CSS 子集（h1 / #id / .class / [name=] / table）
+//! - JS 引擎：Lightpanda，或本机 Edge/Chrome CDP（Windows 无 Lightpanda 时）
+//! - Cookie：原生 Firefox sqlite；Chromium Windows DPAPI（v20 不解）
 //! - 环境变量回退：`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER` / `RXT_HTTP_SESSION`
 //! - Bearer/CSRF 只发给会话 origin 或 `--auth-host` / `RXT_HTTP_AUTH_HOSTS`
 //! - 会话目录 0700，认证文件 0600；`rxt http purge` 覆写后删除
@@ -28,6 +30,8 @@ use serde::{Deserialize, Serialize};
 mod browse;
 #[path = "http_cdp.rs"]
 mod cdp;
+#[path = "http_cookies_native.rs"]
+mod cookies_native;
 
 const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const MAX_BODY: usize = 32 * 1024 * 1024;
@@ -1114,6 +1118,11 @@ fn load_browser(
     if key == "tabbit" || key == "tabbit-browser" {
         return load_tabbit(domains);
     }
+    match cookies_native::load(&key, domains.clone()) {
+        Ok(pair) if !pair.1.is_empty() => return Ok(pair),
+        Ok(_) => {}
+        Err(e) => eprintln!("# native cookie {key}: {e}"),
+    }
     #[cfg(not(feature = "cookies"))]
     {
         return load_browser_python(&key, domains);
@@ -1217,6 +1226,11 @@ fn load_chromium_dir(
             "不是 Chromium User Data（没找到 Cookies）: {}",
             user_data.display()
         );
+    }
+    if let Ok(recs) = cookies_native::load_chromium_user_data(user_data, domains.clone()) {
+        if !recs.is_empty() {
+            return Ok(recs);
+        }
     }
     #[cfg(feature = "cookies")]
     {
@@ -1395,9 +1409,9 @@ fn python_with_rookiepy() -> anyhow::Result<String> {
         }
     }
     anyhow::bail!(
-        "本二进制未启用 cookies feature，且未找到带 rookiepy 的 Python。\n\
-         pip install rookiepy   或   cargo build --release --features cookies\n\
-         也可 --cookie-json / --cookie-jar（浏览器扩展导出，不读 Chrome v20 密文）。"
+        "读浏览器 Cookie：Firefox 走原生 sqlite，不必装 Python。\n\
+         Chrome/Edge 127+ 磁盘值是 App-Bound v20，rxt 不解。\n\
+         请 --browser firefox，或 Cookie-Editor 导出 --cookie-json。"
     )
 }
 
@@ -3666,9 +3680,14 @@ mod tests {
 
     #[cfg(not(feature = "cookies"))]
     #[test]
-    fn browser_requires_cookies_feature() {
-        let e = load_browser("chrome", None).unwrap_err().to_string();
-        assert!(e.contains("cookies"));
+    fn native_cookie_does_not_need_rookiepy() {
+        match load_browser("firefox", None) {
+            Ok((_, recs)) => assert!(!recs.is_empty()),
+            Err(e) => {
+                let s = e.to_string();
+                assert!(!s.to_ascii_lowercase().contains("rookiepy"), "{s}");
+            }
+        }
     }
 
     #[test]
