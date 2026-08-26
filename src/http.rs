@@ -1517,7 +1517,8 @@ fn load_netscape(path: &Path) -> anyhow::Result<Vec<CookieRec>> {
 fn save_netscape(path: &Path, cookies: &[CookieRec]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            secure_mkdir(parent)?;
+            // 只建目录，不 chmod 用户指定路径的父目录（例如 ~/Documents）。
+            std::fs::create_dir_all(parent)?;
         }
     }
     let mut buf = String::new();
@@ -1609,6 +1610,9 @@ const SESSION_JUNK: &[&str] = &[
     "draft.json",
 ];
 
+const SENTINEL_NAME: &str = ".rxt-http-session";
+const SENTINEL_MAGIC: &str = "rxt-http-session-v1";
+
 fn chmod_mode(path: &Path, mode: u32) {
     #[cfg(unix)]
     {
@@ -1618,11 +1622,77 @@ fn chmod_mode(path: &Path, mode: u32) {
     let _ = (path, mode);
 }
 
+fn is_session_filename(name: &str) -> bool {
+    name == SENTINEL_NAME || AUTH_FILES.contains(&name) || SESSION_JUNK.contains(&name)
+}
+
+fn default_session_root() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".rxt")
+        .join("http-session")
+}
+
+fn is_under_default_session_root(dir: &Path) -> bool {
+    let root = default_session_root();
+    dir == root.as_path() || dir.starts_with(&root)
+}
+
+fn sentinel_path(dir: &Path) -> PathBuf {
+    dir.join(SENTINEL_NAME)
+}
+
+fn sentinel_ok(dir: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(sentinel_path(dir)) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    v.get("magic").and_then(|x| x.as_str()) == Some(SENTINEL_MAGIC)
+}
+
+fn write_sentinel(dir: &Path) -> anyhow::Result<()> {
+    let body = serde_json::json!({
+        "magic": SENTINEL_MAGIC,
+        "nonce": hex::encode(uuid::Uuid::new_v4().as_bytes()),
+        "created": now_unix(),
+    });
+    secure_write(sentinel_path(dir), serde_json::to_vec_pretty(&body)?)
+}
+
+fn dir_has_foreign_entries(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let name = e.file_name();
+        !is_session_filename(&name.to_string_lossy())
+    })
+}
+
+/// 会话目录：写哨兵；chmod 0700 只作用于会话目录本身 / `~/.rxt/http-session`。
 pub(super) fn secure_mkdir(dir: &Path) -> anyhow::Result<()> {
+    if dir.exists() && !dir.is_dir() {
+        anyhow::bail!("{} 不是目录", dir.display());
+    }
     std::fs::create_dir_all(dir)?;
-    chmod_mode(dir, 0o700);
+    if !sentinel_ok(dir) {
+        if dir_has_foreign_entries(dir) && !is_under_default_session_root(dir) {
+            anyhow::bail!(
+                "{} 不是 rxt http 会话目录（缺 {SENTINEL_NAME}）。不要把 RXT_HTTP_SESSION_DIR 指到项目目录",
+                dir.display()
+            );
+        }
+        write_sentinel(dir)?;
+    }
+    if sentinel_ok(dir) || is_under_default_session_root(dir) {
+        chmod_mode(dir, 0o700);
+    }
     if let Some(parent) = dir.parent() {
-        if parent.file_name().and_then(|s| s.to_str()) == Some("http-session") {
+        if is_under_default_session_root(parent)
+            && parent.file_name().and_then(|s| s.to_str()) == Some("http-session")
+        {
             chmod_mode(parent, 0o700);
         }
     }
@@ -1633,7 +1703,7 @@ pub(super) fn secure_write(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> an
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            secure_mkdir(parent)?;
+            std::fs::create_dir_all(parent)?;
         }
     }
     std::fs::write(path, data.as_ref())?;
@@ -1652,18 +1722,18 @@ fn secure_wipe(path: &Path) {
 }
 
 pub(super) fn purge_session(dir: &Path) -> anyhow::Result<()> {
+    if !sentinel_ok(dir) {
+        anyhow::bail!(
+            "拒绝 purge：{} 没有会话哨兵 {SENTINEL_NAME}（避免误删项目文件）",
+            dir.display()
+        );
+    }
     let _ = cdp::hold_quit(dir);
     for name in AUTH_FILES.iter().chain(SESSION_JUNK.iter()) {
         secure_wipe(&dir.join(name));
     }
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_file() {
-                secure_wipe(&p);
-            }
-        }
-    }
+    // 哨兵最后删，中途失败仍可再 purge。不遍历未知文件。
+    secure_wipe(&sentinel_path(dir));
     let _ = std::fs::remove_dir(dir);
     eprintln!("# purged {}", dir.display());
     Ok(())
@@ -3754,12 +3824,89 @@ mod tests {
             br#"{"local":{"access_token":"tok"}}"#,
         )
         .unwrap();
+        std::fs::write(dir.join("notes.txt"), b"keep-me").unwrap();
         purge_session(&dir).unwrap();
         assert!(!dir.join("cookies.txt").exists());
         assert!(!dir.join("storage.json").exists());
         assert!(!dir.join("origin.json").exists());
-        assert!(!dir.exists() || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) == 0);
+        assert!(!dir.join(SENTINEL_NAME).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "keep-me"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_refuses_without_sentinel() {
+        let dir = std::env::temp_dir().join(format!(
+            "rxt-purge-nosent-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keep-me.txt"), b"precious").unwrap();
+        let err = purge_session(&dir).unwrap_err().to_string();
+        assert!(err.contains("拒绝 purge"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("keep-me.txt")).unwrap(),
+            "precious"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_dir_refuses_project_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "rxt-fake-proj-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), b"[package]\nname=\"x\"\n").unwrap();
+        let err = secure_mkdir(&dir).unwrap_err().to_string();
+        assert!(err.contains("不是 rxt http"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(),
+            "[package]\nname=\"x\"\n"
+        );
+        assert!(!dir.join(SENTINEL_NAME).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cookie_jar_does_not_chmod_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = std::env::temp_dir().join(format!(
+            "rxt-chmod-parent-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let jar = parent.join("cookies.txt");
+        save_netscape(
+            &jar,
+            &[CookieRec {
+                domain: "ex.com".into(),
+                path: "/".into(),
+                secure: false,
+                http_only: false,
+                expires: None,
+                name: "sid".into(),
+                value: "abc".into(),
+            }],
+        )
+        .unwrap();
+        let dir_mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(&jar).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o755, "父目录不该被改成 0700");
+        assert_eq!(file_mode, 0o600, "cookie 文件本身 0600");
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]

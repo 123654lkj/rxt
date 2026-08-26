@@ -60,4 +60,4 @@ russh = { version = "0.61.2", default-features = false, features = ["rsa", "flat
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Threading"] }

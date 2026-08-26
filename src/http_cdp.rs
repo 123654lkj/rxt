@@ -5,10 +5,13 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tungstenite::protocol::WebSocket;
 use tungstenite::Message;
+
+static ENGINE_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
 const HOOK_JS: &str = r#"
 window.__rxt_net = window.__rxt_net || [];
@@ -184,11 +187,18 @@ fn serve_alive(port: u16, pid: u32) -> bool {
 }
 
 fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
     #[cfg(unix)]
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        process_image(pid).is_some()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         true
@@ -204,10 +214,7 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
                 return Ok((m.port, m.pid));
             }
             if serve_alive(m.port, m.pid) && m.heap_mb != want_heap {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(m.pid as i32, libc::SIGTERM);
-                }
+                kill_pid(m.pid);
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
@@ -222,7 +229,7 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
     let log = rxt_dir().join("lightpanda.log");
     let logf = std::fs::File::create(&log)?;
     let heap = want_heap.to_string();
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .env("LIGHTPANDA_DISABLE_TELEMETRY", "true")
         .args([
             "serve",
@@ -247,6 +254,7 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
         if serve_alive(port, pid) {
+            adopt_engine_child(child);
             let m = ServeMeta {
                 port,
                 pid,
@@ -258,6 +266,8 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
         }
         std::thread::sleep(Duration::from_millis(80));
     }
+    let _ = child.kill();
+    let _ = child.wait();
     anyhow::bail!("lightpanda 未在 :{port} 起来。日志 {}", log.display())
 }
 
@@ -453,9 +463,92 @@ fn secret_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
+fn adopt_engine_child(child: Child) {
+    let mut g = ENGINE_CHILD.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut old) = g.take() {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
+    *g = Some(child);
+}
+
+fn kill_owned_child(pid: u32) -> bool {
+    let mut g = ENGINE_CHILD.lock().unwrap_or_else(|e| e.into_inner());
+    match g.as_ref() {
+        Some(c) if c.id() == pid => {
+            let mut c = g.take().unwrap();
+            let _ = c.kill();
+            let _ = c.wait();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn process_image(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+    #[cfg(windows)]
+    {
+        windows_process_image(pid)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn image_is_killable(image: &str) -> bool {
+    let norm = image.replace('\\', "/");
+    let name = norm
+        .rsplit('/')
+        .next()
+        .unwrap_or(&norm)
+        .to_ascii_lowercase();
+    name.contains("lightpanda") || name.contains("rxt-http") || name.starts_with("rxt-tools")
+}
+
+#[cfg(windows)]
+fn windows_process_image(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() || h == (-1isize as _) {
+            return None;
+        }
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
 fn kill_pid(pid: u32) {
     if pid == 0 {
         return;
+    }
+    if kill_owned_child(pid) {
+        return;
+    }
+    match process_image(pid) {
+        Some(img) if !image_is_killable(&img) => return,
+        None if cfg!(windows) => return,
+        _ => {}
     }
     #[cfg(unix)]
     unsafe {
@@ -465,7 +558,30 @@ fn kill_pid(pid: u32) {
             libc::kill(pid as i32, libc::SIGKILL);
         }
     }
-    let _ = pid;
+    #[cfg(windows)]
+    {
+        windows_terminate(pid);
+    }
+}
+
+#[cfg(windows)]
+fn windows_terminate(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+    unsafe {
+        let h = OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
+        if h.is_null() || h == (-1isize as _) {
+            return;
+        }
+        let _ = TerminateProcess(h, 1);
+        CloseHandle(h);
+    }
 }
 
 fn hold_path(dir: &Path) -> PathBuf {
@@ -892,6 +1008,14 @@ pub(super) fn hold_quit(dir: &Path) -> anyhow::Result<()> {
 }
 
 pub(super) fn close_js() -> anyhow::Result<()> {
+    if let Some(mut c) = ENGINE_CHILD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
     if let Some(home) = dirs::home_dir() {
         let sess = home.join(".rxt").join("http-session");
         if let Ok(rd) = std::fs::read_dir(sess) {
@@ -1065,6 +1189,17 @@ mod tests {
         assert!(!secret_eq(&m.secret, "abc"));
         assert!(secret_eq("deadbeef", "deadbeef"));
         assert!(!secret_eq("deadbeef", "deadbeee"));
+    }
+
+    #[test]
+    fn image_is_killable_only_engine() {
+        assert!(image_is_killable("/home/u/.rxt/lib/lightpanda"));
+        assert!(image_is_killable(r"C:\Users\a\.rxt\lib\lightpanda.exe"));
+        assert!(image_is_killable("/usr/local/bin/rxt-tools"));
+        assert!(image_is_killable("rxt-http.exe"));
+        assert!(!image_is_killable("/usr/bin/firefox"));
+        assert!(!image_is_killable("C:\\Windows\\System32\\notepad.exe"));
+        assert!(!image_is_killable("/usr/bin/rxt"));
     }
 
     #[test]

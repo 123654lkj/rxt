@@ -53,6 +53,13 @@ struct PageMeta {
 
 pub(super) fn run(opts: &HttpOpts<'_>, method: &str, args: &[String]) -> anyhow::Result<()> {
     let dir = session_dir(opts.session);
+    // purge/close 不得先 create+哨兵，否则误指向项目目录会先污染再删。
+    if matches!(method, "PURGE" | "CLEAN") {
+        return super::purge_session(&dir);
+    }
+    if method == "CLOSE" {
+        return super::cdp::close_js();
+    }
     super::secure_mkdir(&dir)?;
     let jar_owned = dir.join("cookies.txt");
     let jar_path: &Path = opts.cookie_jar.unwrap_or(jar_owned.as_path());
