@@ -1699,8 +1699,60 @@ fn validate_session_path(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Windows canonicalize 会得到 `\\?\C:\...`，未存在的子路径仍是普通路径，必须剥掉再比。
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if let Some(unc) = rest.strip_prefix(r"UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+        return PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
+/// 已存在的最长前缀 canonicalize，再拼上尚未创建的尾部，并去掉 Windows 扩展前缀。
+fn resolve_for_compare(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return strip_verbatim(&c);
+    }
+    let mut names: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if cur.exists() {
+            let mut base = std::fs::canonicalize(&cur)
+                .map(|c| strip_verbatim(&c))
+                .unwrap_or_else(|_| strip_verbatim(&cur));
+            for n in names.iter().rev() {
+                base.push(n);
+            }
+            return base;
+        }
+        match (cur.file_name(), cur.parent()) {
+            (Some(name), Some(parent)) if parent != cur.as_path() => {
+                names.push(name.to_os_string());
+                cur = parent.to_path_buf();
+            }
+            _ => return strip_verbatim(p),
+        }
+    }
+}
+
+fn path_cmp_key(p: &Path) -> String {
+    strip_verbatim(p)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
 fn paths_under(dir: &Path, root: &Path) -> bool {
-    dir == root || dir.starts_with(root)
+    let d = path_cmp_key(dir);
+    let r = path_cmp_key(root);
+    if r.is_empty() {
+        return false;
+    }
+    d == r || d.starts_with(&format!("{r}/"))
 }
 
 fn is_under_default_session_root(dir: &Path) -> bool {
@@ -1712,13 +1764,13 @@ fn is_under_default_session_root(dir: &Path) -> bool {
     if path_has_parent_dir(&rxt) || path_has_parent_dir(&root) {
         return false;
     }
-    let rxt_c = std::fs::canonicalize(&rxt).unwrap_or_else(|_| rxt.clone());
-    let root_c = std::fs::canonicalize(&root).unwrap_or(root);
+    let rxt_c = resolve_for_compare(&rxt);
+    let root_c = resolve_for_compare(&root);
     // 会话根解析后仍须在 ~/.rxt 下，防止 http-session 本身被链到项目
     if !paths_under(&root_c, &rxt_c) {
         return false;
     }
-    let dir_c = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir_c = resolve_for_compare(dir);
     paths_under(&dir_c, &root_c)
 }
 
@@ -1786,6 +1838,9 @@ pub(super) fn secure_mkdir(dir: &Path) -> anyhow::Result<()> {
 
 pub(super) fn secure_write(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
     let path = path.as_ref();
+    if session_path_is_link(path) {
+        anyhow::bail!("拒绝写入符号链接：{}", path.display());
+    }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -1797,7 +1852,13 @@ pub(super) fn secure_write(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> an
 }
 
 fn secure_wipe(path: &Path) {
-    if let Ok(meta) = std::fs::metadata(path) {
+    // 白名单名若是 symlink/junction：只删链接，不跟随、不覆写目标。
+    if session_path_is_link(path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(path);
+        return;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
         if meta.is_file() {
             let n = (meta.len() as usize).min(8 * 1024 * 1024);
             let _ = std::fs::write(path, vec![0u8; n]);
@@ -3940,6 +4001,95 @@ mod tests {
             "precious"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strip_verbatim_drops_windows_extended_prefix() {
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\C:\Users\a\.rxt")).to_string_lossy(),
+            r"C:\Users\a\.rxt"
+        );
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\UNC\server\share\rxt")).to_string_lossy(),
+            r"\\server\share\rxt"
+        );
+        assert_eq!(
+            strip_verbatim(Path::new(r"C:\Users\a\.rxt")).to_string_lossy(),
+            r"C:\Users\a\.rxt"
+        );
+    }
+
+    #[test]
+    fn paths_under_accepts_mixed_verbatim_and_plain() {
+        let rxt = strip_verbatim(Path::new(r"\\?\C:\Users\a\.rxt"));
+        let root = PathBuf::from(r"C:\Users\a\.rxt\http-session");
+        let nested = PathBuf::from(r"C:\Users\a\.rxt\http-session\default");
+        assert!(
+            paths_under(&root, &rxt),
+            "root={} rxt={}",
+            root.display(),
+            rxt.display()
+        );
+        assert!(paths_under(&nested, &root));
+        assert!(!paths_under(Path::new(r"C:\Users\a\Documents"), &rxt));
+    }
+
+    #[test]
+    fn resolve_for_compare_joins_missing_child() {
+        let parent =
+            std::env::temp_dir().join(format!("rxt-resolve-{}-{}", std::process::id(), now_unix()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let missing = parent.join("http-session").join("default");
+        let got = resolve_for_compare(&missing);
+        let expect = resolve_for_compare(&parent)
+            .join("http-session")
+            .join("default");
+        assert_eq!(
+            got,
+            expect,
+            "got={} expect={}",
+            got.display(),
+            expect.display()
+        );
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_does_not_follow_whitelist_symlink() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-purge-sl-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tmp.join("sess");
+        persist_login(
+            &dir,
+            &[CookieRec {
+                domain: "ex.com".into(),
+                path: "/".into(),
+                secure: false,
+                http_only: false,
+                expires: None,
+                name: "sid".into(),
+                value: "abc".into(),
+            }],
+            "test",
+        )
+        .unwrap();
+        let precious = tmp.join("precious.txt");
+        std::fs::write(&precious, b"do-not-clobber").unwrap();
+        let link = dir.join("page.html");
+        std::os::unix::fs::symlink(&precious, &link).unwrap();
+        purge_session(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&precious).unwrap(),
+            "do-not-clobber"
+        );
+        assert!(!link.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
