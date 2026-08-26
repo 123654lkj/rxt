@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 
 const PAGE_CMDS: &[&str] = &[
     "OPEN", "GO", "NAV", "SNAP", "SNAPSHOT", "CLICK", "FILL", "READ", "SHOW", "ATTR", "SUBMIT",
-    "EVAL", "JS", "NET", "WAIT", "CLOSE", "STORAGE", "HOLD", "IMPORT", "AUTH", "SSO", "IDENT",
+    "EVAL", "JS", "NET", "WAIT", "CLOSE", "PURGE", "CLEAN", "STORAGE", "HOLD", "IMPORT", "AUTH",
+    "SSO", "IDENT",
 ];
 
 pub(super) fn is_page_cmd(method: &str) -> bool {
@@ -52,7 +53,7 @@ struct PageMeta {
 
 pub(super) fn run(opts: &HttpOpts<'_>, method: &str, args: &[String]) -> anyhow::Result<()> {
     let dir = session_dir(opts.session);
-    fs::create_dir_all(&dir)?;
+    super::secure_mkdir(&dir)?;
     let jar_owned = dir.join("cookies.txt");
     let jar_path: &Path = opts.cookie_jar.unwrap_or(jar_owned.as_path());
     if method == "HOLD" {
@@ -86,19 +87,16 @@ pub(super) fn run(opts: &HttpOpts<'_>, method: &str, args: &[String]) -> anyhow:
                 super::print_identity(opts, args.first().map(|s| s.as_str()))
             }
         }
-        "EVAL" | "JS" | "NET" | "WAIT" | "STORAGE" | "CLOSE" => anyhow::bail!(
+        "PURGE" | "CLEAN" => super::purge_session(&dir),
+        "CLOSE" => super::cdp::close_js(),
+        "EVAL" | "JS" | "NET" | "WAIT" | "STORAGE" => anyhow::bail!(
             "这个命令需要 JS 引擎。安装 ~/.rxt/lib/lightpanda 或去掉 RXT_HTTP_ENGINE=static"
         ),
         _ => anyhow::bail!("未知页面命令: {method}"),
     }
 }
 
-fn sso_cmd(
-    opts: &HttpOpts<'_>,
-    dir: &Path,
-    jar: &Path,
-    args: &[String],
-) -> anyhow::Result<()> {
+fn sso_cmd(opts: &HttpOpts<'_>, dir: &Path, jar: &Path, args: &[String]) -> anyhow::Result<()> {
     if let Some(url) = args.first() {
         if is_http_url(url) {
             if super::cdp::engine_wanted(opts) {
@@ -114,7 +112,11 @@ fn sso_cmd(
 fn import_cmd(opts: &HttpOpts<'_>, dir: &Path, args: &[String]) -> anyhow::Result<()> {
     let host = args.first().map(|s| domain_from_input(s));
     let (src, mut recs) = gather_cookies(opts, host.as_deref())?;
-    if recs.is_empty() && opts.browser.is_none() && opts.cookie_json.is_none() && opts.cookies.is_empty() {
+    if recs.is_empty()
+        && opts.browser.is_none()
+        && opts.cookie_json.is_none()
+        && opts.cookies.is_empty()
+    {
         anyhow::bail!(
             "import 需要来源：--browser firefox|chrome|edge|brave|auto  或  --cookie-json file.json"
         );
@@ -253,8 +255,8 @@ fn run_js(
             } else {
                 format!("!!document.querySelector({:?})", spec)
             };
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(opts.timeout.max(3));
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(opts.timeout.max(3));
             loop {
                 let v = cdp::eval_js(dir, &expr)?;
                 let ok = match &v {
@@ -277,6 +279,7 @@ fn run_js(
         "AUTH" | "IDENT" => super::print_identity(opts, args.first().map(|s| s.as_str())),
         "SSO" => sso_cmd(opts, dir, jar, args),
         "CLOSE" => cdp::close_js(),
+        "PURGE" | "CLEAN" => super::purge_session(dir),
         "HOLD" => super::cdp::hold_loop(dir),
         _ => anyhow::bail!("未知页面命令: {method}"),
     }
@@ -315,7 +318,10 @@ fn after_js(opts: &HttpOpts<'_>, dir: &Path) -> anyhow::Result<()> {
     if opts.text {
         let html = load_html(dir)?;
         println!();
-        print_out(&apply_budget(opts.budget.or(Some(2000)), &html_to_text(&html)));
+        print_out(&apply_budget(
+            opts.budget.or(Some(2000)),
+            &html_to_text(&html),
+        ));
     }
     if net_n > 0 {
         eprintln!("# XHR/fetch {net_n} 条。看: rxt http net");
@@ -422,7 +428,9 @@ fn attr_cmd(opts: &HttpOpts<'_>, dir: &Path, args: &[String]) -> anyhow::Result<
         "method" => r.method.clone().unwrap_or_default(),
         "text" => r.text.clone(),
         "field" => r.field.clone().unwrap_or_default(),
-        other => anyhow::bail!("未知属性: {other}（href|name|value|role|action|method|text|field）"),
+        other => {
+            anyhow::bail!("未知属性: {other}（href|name|value|role|action|method|text|field）")
+        }
     };
     if opts.json_body {
         println!(
@@ -462,12 +470,7 @@ fn fill_cmd(dir: &Path, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn click_cmd(
-    opts: &HttpOpts<'_>,
-    dir: &Path,
-    jar: &Path,
-    args: &[String],
-) -> anyhow::Result<()> {
+fn click_cmd(opts: &HttpOpts<'_>, dir: &Path, jar: &Path, args: &[String]) -> anyhow::Result<()> {
     let sel = args
         .first()
         .ok_or_else(|| anyhow::anyhow!("需要选择器，例如: rxt http click @e1"))?;
@@ -489,7 +492,10 @@ fn click_cmd(
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("@{} 没有 name", r.id))?;
             let mut draft = load_draft(dir)?;
-            let cur = draft.get(&field).cloned().unwrap_or_else(|| r.value.clone());
+            let cur = draft
+                .get(&field)
+                .cloned()
+                .unwrap_or_else(|| r.value.clone());
             let next = if cur == "on" || cur == "true" || cur == "1" {
                 ""
             } else {
@@ -504,12 +510,7 @@ fn click_cmd(
     }
 }
 
-fn submit_cmd(
-    opts: &HttpOpts<'_>,
-    dir: &Path,
-    jar: &Path,
-    args: &[String],
-) -> anyhow::Result<()> {
+fn submit_cmd(opts: &HttpOpts<'_>, dir: &Path, jar: &Path, args: &[String]) -> anyhow::Result<()> {
     let form = if let Some(sel) = args.first() {
         if let Some(id) = parse_ref_id(sel) {
             let refs = load_refs(dir)?;
@@ -536,13 +537,16 @@ fn submit_form(
         anyhow::bail!("当前页没有 <form>，SPA 请改用 API（rxt http scan）");
     }
     let idx = form_idx.unwrap_or(0);
-    let form = forms.get(idx).ok_or_else(|| {
-        anyhow::anyhow!("没有 form {idx}（本页 {} 个表单）", forms.len())
-    })?;
+    let form = forms
+        .get(idx)
+        .ok_or_else(|| anyhow::anyhow!("没有 form {idx}（本页 {} 个表单）", forms.len()))?;
     let draft = load_draft(dir)?;
     let mut pairs: Vec<String> = Vec::new();
     for f in &form.fields {
-        let val = draft.get(&f.name).cloned().unwrap_or_else(|| f.value.clone());
+        let val = draft
+            .get(&f.name)
+            .cloned()
+            .unwrap_or_else(|| f.value.clone());
         pairs.push(format!("{}={val}", f.name));
     }
     for extra in opts.form {
@@ -607,7 +611,10 @@ fn print_after_load(
     print_snap(opts, &meta, refs)?;
     if opts.text {
         println!();
-        print_out(&apply_budget(opts.budget.or(Some(2000)), &html_to_text(html)));
+        print_out(&apply_budget(
+            opts.budget.or(Some(2000)),
+            &html_to_text(html),
+        ));
     }
     Ok(())
 }
@@ -686,10 +693,7 @@ fn build_refs(base: &str, html: &str) -> Vec<PageRef> {
             id: format!("e{n}"),
             role: "button".into(),
             name: form.name.clone().unwrap_or_else(|| format!("form{fi}")),
-            text: form
-                .name
-                .clone()
-                .unwrap_or_else(|| "submit".into()),
+            text: form.name.clone().unwrap_or_else(|| "submit".into()),
             href: None,
             form: Some(fi),
             field: None,
@@ -839,10 +843,7 @@ fn table_rows(table_html: &str) -> Vec<serde_json::Value> {
         }
     }
     if rows.len() < 2 {
-        return rows
-            .into_iter()
-            .map(|r| serde_json::json!(r))
-            .collect();
+        return rows.into_iter().map(|r| serde_json::json!(r)).collect();
     }
     let headers = &rows[0];
     rows.iter()
@@ -865,10 +866,7 @@ fn parse_ref_id(s: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
-    if s.starts_with('e')
-        && s[1..].chars().all(|c| c.is_ascii_digit())
-        && s.len() > 1
-    {
+    if s.starts_with('e') && s[1..].chars().all(|c| c.is_ascii_digit()) && s.len() > 1 {
         return Some(s.to_string());
     }
     None
@@ -881,7 +879,8 @@ fn find_ref<'a>(refs: &'a [PageRef], id: &str) -> anyhow::Result<&'a PageRef> {
 }
 
 fn save_page(dir: &Path, jar: &Path, out: &FetchOut) -> anyhow::Result<()> {
-    fs::create_dir_all(dir)?;
+    super::secure_mkdir(dir)?;
+    let _ = super::record_origin(dir, &out.url);
     fs::write(dir.join("page.html"), &out.bytes)?;
     let title = page_title(&String::from_utf8_lossy(&out.bytes));
     let meta = PageMeta {
@@ -905,30 +904,20 @@ fn save_draft(dir: &Path, draft: &BTreeMap<String, String>) -> anyhow::Result<()
 }
 
 fn load_html(dir: &Path) -> anyhow::Result<String> {
-    fs::read_to_string(dir.join("page.html")).map_err(|_| {
-        anyhow::anyhow!(
-            "没有打开的页面 ({})。先 rxt http open <URL>",
-            dir.display()
-        )
-    })
+    fs::read_to_string(dir.join("page.html"))
+        .map_err(|_| anyhow::anyhow!("没有打开的页面 ({})。先 rxt http open <URL>", dir.display()))
 }
 
 fn load_meta(dir: &Path) -> anyhow::Result<PageMeta> {
     let raw = fs::read_to_string(dir.join("meta.json")).map_err(|_| {
-        anyhow::anyhow!(
-            "没有打开的页面 ({})。先 rxt http open <URL>",
-            dir.display()
-        )
+        anyhow::anyhow!("没有打开的页面 ({})。先 rxt http open <URL>", dir.display())
     })?;
     Ok(serde_json::from_str(&raw)?)
 }
 
 fn load_refs(dir: &Path) -> anyhow::Result<Vec<PageRef>> {
     let raw = fs::read_to_string(dir.join("refs.json")).map_err(|_| {
-        anyhow::anyhow!(
-            "没有打开的页面 ({})。先 rxt http open <URL>",
-            dir.display()
-        )
+        anyhow::anyhow!("没有打开的页面 ({})。先 rxt http open <URL>", dir.display())
     })?;
     Ok(serde_json::from_str(&raw)?)
 }

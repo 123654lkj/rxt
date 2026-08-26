@@ -8,6 +8,8 @@
 //! - `--form` 提交表单；`--browser` / `--cookie-jar` / `--cookie-json` 带登录态
 //! - `--select` 抽 CSS 子集（h1 / #id / .class / [name=] / table）
 //! - 环境变量回退：`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER` / `RXT_HTTP_SESSION`
+//! - Bearer/CSRF 只发给会话 origin 或 `--auth-host` / `RXT_HTTP_AUTH_HOSTS`
+//! - 会话目录 0700，认证文件 0600；`rxt http purge` 覆写后删除
 //! - `--text` 抽正文 / `--links` 抽链接 / `--budget` 截断 / `-o` 落盘
 //! - 多个 URL 并行请求；`-j` 打包成一份 JSON
 
@@ -54,6 +56,8 @@ pub struct HttpOpts<'a> {
     pub select: Option<&'a str>,
     pub session: Option<&'a str>,
     pub engine: Option<&'a str>,
+    /// 允许自动附加 Bearer/CSRF 的 host（可重复）。环境变量 `RXT_HTTP_AUTH_HOSTS`。
+    pub auth_hosts: &'a [String],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -545,15 +549,7 @@ fn request_one(
         .and_then(|p| load_netscape(p).ok())
         .unwrap_or_default();
     let extra = parse_cookie_args(opts.cookies);
-    let out = match fetch_one_inner(
-        opts,
-        url,
-        fetch_verb,
-        &agent,
-        &jar_cookies,
-        &extra,
-        form,
-    ) {
+    let out = match fetch_one_inner(opts, url, fetch_verb, &agent, &jar_cookies, &extra, form) {
         Ok(out) => out,
         Err(e) => {
             return FetchOut {
@@ -1060,8 +1056,18 @@ fn dump_cookies(opts: &HttpOpts<'_>) -> anyhow::Result<()> {
 }
 
 const BROWSER_ALL: &[&str] = &[
-    "chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi", "arc", "zen",
-    "librewolf", "opera-gx", "tabbit",
+    "chrome",
+    "edge",
+    "firefox",
+    "brave",
+    "chromium",
+    "opera",
+    "vivaldi",
+    "arc",
+    "zen",
+    "librewolf",
+    "opera-gx",
+    "tabbit",
 ];
 
 fn load_browser(
@@ -1207,7 +1213,10 @@ fn load_chromium_dir(
 ) -> anyhow::Result<Vec<CookieRec>> {
     let pairs = chromium_cookie_pairs(user_data);
     if pairs.is_empty() {
-        anyhow::bail!("不是 Chromium User Data（没找到 Cookies）: {}", user_data.display());
+        anyhow::bail!(
+            "不是 Chromium User Data（没找到 Cookies）: {}",
+            user_data.display()
+        );
     }
     #[cfg(feature = "cookies")]
     {
@@ -1456,25 +1465,10 @@ fn upsert_cookies(all: &mut Vec<CookieRec>, incoming: &[CookieRec]) {
 }
 
 fn cookie_header_for(cookies: &[CookieRec], host: &str, path: &str, https: bool) -> Option<String> {
-    let now = now_unix();
     let mut parts = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for c in cookies {
-        if c.name.is_empty() {
-            continue;
-        }
-        if let Some(exp) = c.expires {
-            if exp > 0 && exp < now {
-                continue;
-            }
-        }
-        if c.secure && !https {
-            continue;
-        }
-        if !c.domain.is_empty() && !domain_matches(&c.domain, host) {
-            continue;
-        }
-        if !path_matches(&c.path, path) {
+        if !cookie_applies(c, host, path, https) {
             continue;
         }
         if !seen.insert(c.name.clone()) {
@@ -1523,12 +1517,12 @@ fn load_netscape(path: &Path) -> anyhow::Result<Vec<CookieRec>> {
 fn save_netscape(path: &Path, cookies: &[CookieRec]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            secure_mkdir(parent)?;
         }
     }
-    let mut f = std::fs::File::create(path)?;
-    writeln!(f, "# Netscape HTTP Cookie File")?;
-    writeln!(f, "# written by rxt http")?;
+    let mut buf = String::new();
+    buf.push_str("# Netscape HTTP Cookie File\n");
+    buf.push_str("# written by rxt http\n");
     for c in cookies {
         let flag = if c.domain.starts_with('.') {
             "TRUE"
@@ -1540,9 +1534,8 @@ fn save_netscape(path: &Path, cookies: &[CookieRec]) -> anyhow::Result<()> {
         } else {
             c.domain.clone()
         };
-        writeln!(
-            f,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        buf.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             domain,
             flag,
             if c.path.is_empty() { "/" } else { &c.path },
@@ -1550,9 +1543,9 @@ fn save_netscape(path: &Path, cookies: &[CookieRec]) -> anyhow::Result<()> {
             c.expires.unwrap_or(0),
             c.name,
             c.value
-        )?;
+        ));
     }
-    Ok(())
+    secure_write(path, buf.as_bytes())
 }
 
 fn cookies_to_devtools(recs: &[CookieRec]) -> serde_json::Value {
@@ -1573,22 +1566,19 @@ fn cookies_to_devtools(recs: &[CookieRec]) -> serde_json::Value {
     )
 }
 
-pub(super) fn persist_login(
-    dir: &Path,
-    recs: &[CookieRec],
-    src: &str,
-) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
+pub(super) fn persist_login(dir: &Path, recs: &[CookieRec], src: &str) -> anyhow::Result<()> {
+    secure_mkdir(dir)?;
     save_netscape(&dir.join("cookies.txt"), recs)?;
-    std::fs::write(
+    secure_write(
         dir.join("cookies.json"),
         serde_json::to_vec_pretty(&cookies_to_devtools(recs))?,
     )?;
     let mut domains: BTreeMap<String, usize> = BTreeMap::new();
     for c in recs {
         *domains.entry(c.domain.clone()).or_insert(0) += 1;
+        record_host_in(dir, &c.domain);
     }
-    std::fs::write(
+    secure_write(
         dir.join("login.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "imported_from": src,
@@ -1598,6 +1588,209 @@ pub(super) fn persist_login(
         }))?,
     )?;
     Ok(())
+}
+
+const AUTH_FILES: &[&str] = &[
+    "cookies.txt",
+    "cookies.json",
+    "storage.json",
+    "headers.json",
+    "login.json",
+    "origin.json",
+    "hold.json",
+    "engine.json",
+];
+
+const SESSION_JUNK: &[&str] = &[
+    "page.html",
+    "meta.json",
+    "refs.json",
+    "net.json",
+    "draft.json",
+];
+
+fn chmod_mode(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    let _ = (path, mode);
+}
+
+pub(super) fn secure_mkdir(dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    chmod_mode(dir, 0o700);
+    if let Some(parent) = dir.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some("http-session") {
+            chmod_mode(parent, 0o700);
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn secure_write(path: impl AsRef<Path>, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            secure_mkdir(parent)?;
+        }
+    }
+    std::fs::write(path, data.as_ref())?;
+    chmod_mode(path, 0o600);
+    Ok(())
+}
+
+fn secure_wipe(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.is_file() {
+            let n = (meta.len() as usize).min(8 * 1024 * 1024);
+            let _ = std::fs::write(path, vec![0u8; n]);
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+pub(super) fn purge_session(dir: &Path) -> anyhow::Result<()> {
+    let _ = cdp::hold_quit(dir);
+    for name in AUTH_FILES.iter().chain(SESSION_JUNK.iter()) {
+        secure_wipe(&dir.join(name));
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                secure_wipe(&p);
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+    eprintln!("# purged {}", dir.display());
+    Ok(())
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct OriginBind {
+    #[serde(default)]
+    origins: Vec<String>,
+    #[serde(default)]
+    hosts: Vec<String>,
+}
+
+fn origin_bind_path(dir: &Path) -> PathBuf {
+    dir.join("origin.json")
+}
+
+fn load_origin_bind(dir: &Path) -> OriginBind {
+    std::fs::read_to_string(origin_bind_path(dir))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_origin_bind(dir: &Path, b: &OriginBind) {
+    let _ = (|| -> anyhow::Result<()> {
+        secure_mkdir(dir)?;
+        secure_write(origin_bind_path(dir), serde_json::to_vec_pretty(b)?)?;
+        Ok(())
+    })();
+}
+
+fn record_host_in(dir: &Path, host: &str) {
+    let h = host.trim_start_matches('.').to_ascii_lowercase();
+    if h.is_empty() {
+        return;
+    }
+    let mut b = load_origin_bind(dir);
+    if !b.hosts.iter().any(|x| x == &h) {
+        b.hosts.push(h);
+        save_origin_bind(dir, &b);
+    }
+}
+
+pub(super) fn record_origin(dir: &Path, url: &str) -> anyhow::Result<()> {
+    // 只记当前页 origin。同会话先后打开 A 再开 B 时，storage 属于 B，不能把 B 的 token 发给 A。
+    let mut b = load_origin_bind(dir);
+    if let Some(o) = origin_of(url) {
+        b.origins = vec![o];
+    }
+    if let Some(h) = host_of(url) {
+        b.hosts = vec![h];
+    }
+    secure_mkdir(dir)?;
+    secure_write(origin_bind_path(dir), serde_json::to_vec_pretty(&b)?)?;
+    Ok(())
+}
+
+fn extra_auth_hosts(opts: &HttpOpts<'_>) -> Vec<String> {
+    let mut v: Vec<String> = opts.auth_hosts.iter().cloned().collect();
+    for env in ["RXT_HTTP_AUTH_HOSTS", "RXT_BEARER_HOST"] {
+        if let Ok(s) = std::env::var(env) {
+            for p in s.split([',', ' ', ';']) {
+                let p = p.trim();
+                if !p.is_empty() {
+                    v.push(p.to_string());
+                }
+            }
+        }
+    }
+    v
+}
+
+fn host_allowed(host: &str, allow: &str) -> bool {
+    let h = host.trim_start_matches('.').to_ascii_lowercase();
+    let mut a = allow.trim().to_ascii_lowercase();
+    for pfx in ["https://", "http://"] {
+        if let Some(rest) = a.strip_prefix(pfx) {
+            a = rest.to_string();
+            break;
+        }
+    }
+    let a = a
+        .split(['/', ':', '?'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('.');
+    if a.is_empty() {
+        return false;
+    }
+    h == a || h.ends_with(&format!(".{a}"))
+}
+
+/// Bearer/CSRF（来自 storage/headers.json/RXT_BEARER）仅同源或 allowlist。
+fn auth_ok_for_url(opts: &HttpOpts<'_>, dir: &Path, url: &str) -> bool {
+    let host = host_of(url).unwrap_or_default();
+    if extra_auth_hosts(opts)
+        .iter()
+        .any(|a| host_allowed(&host, a))
+    {
+        return true;
+    }
+    let b = load_origin_bind(dir);
+    if let Some(o) = origin_of(url) {
+        if b.origins.iter().any(|r| r.eq_ignore_ascii_case(&o)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn cookie_applies(c: &CookieRec, host: &str, path: &str, https: bool) -> bool {
+    if c.name.is_empty() {
+        return false;
+    }
+    if let Some(exp) = c.expires {
+        if exp > 0 && exp < now_unix() {
+            return false;
+        }
+    }
+    if c.secure && !https {
+        return false;
+    }
+    if !c.domain.is_empty() && !domain_matches(&c.domain, host) {
+        return false;
+    }
+    path_matches(&c.path, path)
 }
 
 pub(super) fn gather_cookies(
@@ -1696,39 +1889,50 @@ pub(super) fn load_identity(opts: &HttpOpts<'_>, url: &str) -> anyhow::Result<Id
     if !src.is_empty() && src != "session" {
         notes.push(format!("from={src}"));
     }
-    let mut headers = sso_headers_from_session(&dir, &recs);
-    if let Ok(raw) = std::fs::read_to_string(dir.join("headers.json")) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-            let obj = v
-                .get("headers")
-                .and_then(|h| h.as_object())
-                .or_else(|| v.as_object());
-            if let Some(obj) = obj {
-                for (k, val) in obj {
-                    if k == "headers" {
-                        continue;
-                    }
-                    if let Some(s) = val.as_str() {
-                        headers.push((k.clone(), s.to_string()));
+    let storage_ok = auth_ok_for_url(opts, &dir, url);
+    if !storage_ok {
+        let bind = load_origin_bind(&dir);
+        if !bind.origins.is_empty() {
+            notes.push(format!("auth-skip origin={}", bind.origins.join(",")));
+        } else {
+            notes.push("auth-skip no-origin".into());
+        }
+    }
+    let mut headers = sso_headers_from_session(&dir, &recs, url, storage_ok);
+    if storage_ok {
+        if let Ok(raw) = std::fs::read_to_string(dir.join("headers.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let obj = v
+                    .get("headers")
+                    .and_then(|h| h.as_object())
+                    .or_else(|| v.as_object());
+                if let Some(obj) = obj {
+                    for (k, val) in obj {
+                        if k == "headers" {
+                            continue;
+                        }
+                        if let Some(s) = val.as_str() {
+                            headers.push((k.clone(), s.to_string()));
+                        }
                     }
                 }
             }
         }
-    }
-    if let Ok(b) = std::env::var("RXT_BEARER") {
-        let b = b.trim();
-        if !b.is_empty()
-            && !headers
-                .iter()
-                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-        {
-            let v = if b.to_ascii_lowercase().starts_with("bearer ") {
-                b.to_string()
-            } else {
-                format!("Bearer {b}")
-            };
-            headers.push(("Authorization".into(), v));
-            notes.push("env=RXT_BEARER".into());
+        if let Ok(b) = std::env::var("RXT_BEARER") {
+            let b = b.trim();
+            if !b.is_empty()
+                && !headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            {
+                let v = if b.to_ascii_lowercase().starts_with("bearer ") {
+                    b.to_string()
+                } else {
+                    format!("Bearer {b}")
+                };
+                headers.push(("Authorization".into(), v));
+                notes.push("env=RXT_BEARER".into());
+            }
         }
     }
     Ok(Identity {
@@ -1739,9 +1943,28 @@ pub(super) fn load_identity(opts: &HttpOpts<'_>, url: &str) -> anyhow::Result<Id
     })
 }
 
-fn sso_headers_from_session(dir: &Path, cookies: &[CookieRec]) -> Vec<(String, String)> {
+fn sso_headers_from_session(
+    dir: &Path,
+    cookies: &[CookieRec],
+    url: &str,
+    storage_ok: bool,
+) -> Vec<(String, String)> {
+    let host = host_of(url).unwrap_or_default();
+    let path = path_of(url);
+    let https = url.starts_with("https://");
+    let matching: Vec<CookieRec> = cookies
+        .iter()
+        .filter(|c| cookie_applies(c, &host, path, https))
+        .cloned()
+        .collect();
     let mut headers = Vec::new();
-    if let Some(t) = token_from_storage(dir).or_else(|| token_from_cookies(cookies)) {
+    let token = if storage_ok {
+        token_from_storage(dir)
+    } else {
+        None
+    }
+    .or_else(|| token_from_cookies(&matching));
+    if let Some(t) = token {
         let v = if t.to_ascii_lowercase().starts_with("bearer ") {
             t
         } else {
@@ -1749,7 +1972,13 @@ fn sso_headers_from_session(dir: &Path, cookies: &[CookieRec]) -> Vec<(String, S
         };
         headers.push(("Authorization".into(), v));
     }
-    if let Some(csrf) = csrf_from_cookies(cookies).or_else(|| csrf_from_storage(dir)) {
+    let csrf = if storage_ok {
+        csrf_from_storage(dir)
+    } else {
+        None
+    }
+    .or_else(|| csrf_from_cookies(&matching));
+    if let Some(csrf) = csrf {
         headers.push(("X-CSRF-Token".into(), csrf.clone()));
         headers.push(("X-XSRF-TOKEN".into(), csrf));
     }
@@ -1858,7 +2087,11 @@ fn extract_token_value(key: &str, val: &str) -> Option<String> {
     if v.len() < 12 && !looks_like_jwt(v) {
         return None;
     }
-    Some(v.trim_start_matches("Bearer ").trim_start_matches("bearer ").to_string())
+    Some(
+        v.trim_start_matches("Bearer ")
+            .trim_start_matches("bearer ")
+            .to_string(),
+    )
 }
 
 fn looks_like_jwt(s: &str) -> bool {
@@ -1899,14 +2132,17 @@ fn csrf_from_storage(dir: &Path) -> Option<String> {
 }
 
 pub(super) fn print_identity(opts: &HttpOpts<'_>, url: Option<&str>) -> anyhow::Result<()> {
+    let dir = browse::session_dir(opts.session);
+    let bind = load_origin_bind(&dir);
     let dummy = url.unwrap_or("https://localhost/");
     let ident = load_identity(opts, dummy)?;
-    let dir = browse::session_dir(opts.session);
     if opts.json_body {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "dir": dir.display().to_string(),
+                "origins": bind.origins,
+                "hosts": bind.hosts,
                 "cookies": ident.cookies.len(),
                 "headers": ident.headers.iter().map(|(k,v)| serde_json::json!({"name": k, "value": mask_secret(v)})).collect::<Vec<_>>(),
                 "jar": ident.jar.as_ref().map(|p| p.display().to_string()),
@@ -1916,6 +2152,9 @@ pub(super) fn print_identity(opts: &HttpOpts<'_>, url: Option<&str>) -> anyhow::
         return Ok(());
     }
     println!("session {}", dir.display());
+    if !bind.origins.is_empty() {
+        println!("origins {}", bind.origins.join(" "));
+    }
     println!("cookies {}", ident.cookies.len());
     let mut domains: BTreeMap<String, usize> = BTreeMap::new();
     for c in &ident.cookies {
@@ -3040,7 +3279,40 @@ mod tests {
             select: None,
             session: None,
             engine: None,
+            auth_hosts: &[],
         }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn spawn_capture() -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<String>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let got2 = got.clone();
+        let h = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *got2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let body = b"ok";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    std::str::from_utf8(body).unwrap()
+                );
+                let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+            }
+        });
+        (format!("http://{addr}/api"), got, h)
     }
 
     #[test]
@@ -3298,28 +3570,11 @@ mod tests {
 
     #[test]
     fn identity_sends_session_cookie_and_bearer() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let got = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let got2 = got.clone();
-        let _t = std::thread::spawn(move || {
-            if let Ok((mut s, _)) = listener.accept() {
-                use std::io::Read;
-                let mut buf = [0u8; 4096];
-                let n = s.read(&mut buf).unwrap_or(0);
-                *got2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let body = b"ok";
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    std::str::from_utf8(body).unwrap()
-                );
-                let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
-            }
-        });
-        let dir = std::env::temp_dir().join(format!("rxt-ident-{}", std::process::id()));
+        let _g = env_lock();
+        let (url, got, _t) = spawn_capture();
+        let dir =
+            std::env::temp_dir().join(format!("rxt-ident-{}-{}", std::process::id(), now_unix()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         persist_login(
             &dir,
             &[CookieRec {
@@ -3334,14 +3589,14 @@ mod tests {
             "test",
         )
         .unwrap();
-        std::fs::write(
-            dir.join("storage.json"),
-            r#"{"local":{"access_token":"tok_sso_12345678"},"session":{}}"#,
+        secure_write(
+            &dir.join("storage.json"),
+            br#"{"local":{"access_token":"tok_sso_12345678"},"session":{}}"#,
         )
         .unwrap();
+        record_origin(&dir, &url).unwrap();
         std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
         std::env::set_var("RXT_HTTP_ENGINE", "static");
-        let url = format!("http://{addr}/api");
         let urls = vec![url];
         let opts = HttpOpts {
             engine: Some("static"),
@@ -3350,10 +3605,161 @@ mod tests {
         let _ = run(opts);
         let req = got.lock().unwrap().clone();
         assert!(req.contains("sid=abc"), "{req}");
-        assert!(req.to_ascii_lowercase().contains("authorization: bearer tok_sso_12345678"), "{req}");
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("authorization: bearer tok_sso_12345678"),
+            "{req}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("RXT_HTTP_SESSION_DIR");
         std::env::remove_var("RXT_HTTP_ENGINE");
+    }
+
+    #[test]
+    fn identity_does_not_send_bearer_cross_origin() {
+        let _g = env_lock();
+        let (url, got, _t) = spawn_capture();
+        let dir = std::env::temp_dir().join(format!(
+            "rxt-ident-xorigin-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login(
+            &dir,
+            &[CookieRec {
+                domain: "internal.example".into(),
+                path: "/".into(),
+                secure: false,
+                http_only: false,
+                expires: None,
+                name: "access_token".into(),
+                value: "tok_internal_should_not_leak".into(),
+            }],
+            "test",
+        )
+        .unwrap();
+        secure_write(
+            &dir.join("storage.json"),
+            br#"{"local":{"access_token":"tok_sso_CROSS_LEAK"},"session":{"csrf":"csrf-internal"}}"#,
+        )
+        .unwrap();
+        record_origin(&dir, "https://internal.example/").unwrap();
+        std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
+        std::env::set_var("RXT_HTTP_ENGINE", "static");
+        let urls = vec![url];
+        let opts = HttpOpts {
+            engine: Some("static"),
+            ..test_opts(&urls)
+        };
+        let _ = run(opts);
+        let req = got.lock().unwrap().clone();
+        let low = req.to_ascii_lowercase();
+        assert!(
+            !low.contains("authorization"),
+            "跨域不得发送 Authorization: {req}"
+        );
+        assert!(
+            !low.contains("tok_sso_cross_leak") && !low.contains("tok_internal_should_not_leak"),
+            "跨域不得泄漏 token: {req}"
+        );
+        assert!(!low.contains("x-csrf") && !low.contains("x-xsrf"), "{req}");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("RXT_HTTP_SESSION_DIR");
+        std::env::remove_var("RXT_HTTP_ENGINE");
+    }
+
+    #[test]
+    fn auth_ok_same_origin_or_allowlist() {
+        let dir =
+            std::env::temp_dir().join(format!("rxt-origin-{}-{}", std::process::id(), now_unix()));
+        let _ = std::fs::remove_dir_all(&dir);
+        record_origin(&dir, "https://app.internal/login").unwrap();
+        let urls: Vec<String> = vec![];
+        let opts = test_opts(&urls);
+        assert!(auth_ok_for_url(&opts, &dir, "https://app.internal/api"));
+        assert!(!auth_ok_for_url(&opts, &dir, "https://evil.example/api"));
+        assert!(!auth_ok_for_url(&opts, &dir, "http://app.internal/api"));
+        let allow = vec!["evil.example".into()];
+        let opts2 = HttpOpts {
+            auth_hosts: &allow,
+            ..test_opts(&urls)
+        };
+        assert!(auth_ok_for_url(&opts2, &dir, "https://evil.example/x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_login_unix_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "rxt-login-mode-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login(
+            &dir,
+            &[CookieRec {
+                domain: ".ex.com".into(),
+                path: "/".into(),
+                secure: true,
+                http_only: true,
+                expires: Some(2000000000),
+                name: "sid".into(),
+                value: "abc".into(),
+            }],
+            "firefox",
+        )
+        .unwrap();
+        let file_mode = std::fs::metadata(dir.join("cookies.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let json_mode = std::fs::metadata(dir.join("cookies.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "cookies.txt {file_mode:o}");
+        assert_eq!(json_mode, 0o600, "cookies.json {json_mode:o}");
+        assert_eq!(dir_mode, 0o700, "session dir {dir_mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_wipes_auth_files() {
+        let dir =
+            std::env::temp_dir().join(format!("rxt-purge-{}-{}", std::process::id(), now_unix()));
+        let _ = std::fs::remove_dir_all(&dir);
+        persist_login(
+            &dir,
+            &[CookieRec {
+                domain: "ex.com".into(),
+                path: "/".into(),
+                secure: false,
+                http_only: false,
+                expires: None,
+                name: "sid".into(),
+                value: "secret-cookie".into(),
+            }],
+            "test",
+        )
+        .unwrap();
+        secure_write(
+            &dir.join("storage.json"),
+            br#"{"local":{"access_token":"tok"}}"#,
+        )
+        .unwrap();
+        purge_session(&dir).unwrap();
+        assert!(!dir.join("cookies.txt").exists());
+        assert!(!dir.join("storage.json").exists());
+        assert!(!dir.join("origin.json").exists());
+        assert!(!dir.exists() || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) == 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3450,7 +3856,10 @@ mod tests {
     #[test]
     fn extract_select_h1_and_table() {
         let html = r#"<html><h1>Hello</h1><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table></html>"#;
-        assert_eq!(browse::extract_select(html, "h1"), vec!["Hello".to_string()]);
+        assert_eq!(
+            browse::extract_select(html, "h1"),
+            vec!["Hello".to_string()]
+        );
         let t = browse::extract_select(html, "table");
         assert!(!t.is_empty(), "{t:?}");
         assert!(t[0].contains("\"a\""), "{}", t[0]);
@@ -3459,6 +3868,7 @@ mod tests {
 
     #[test]
     fn page_session_open_fill_click() {
+        let _g = env_lock();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let _t = std::thread::spawn(move || {
@@ -3542,18 +3952,21 @@ mod tests {
         browse::run(&opts, "FILL", &["@e1".into(), "hello".into()]).unwrap();
         browse::run(&opts, "CLICK", &["@e2".into()]).unwrap();
         let html = std::fs::read_to_string(dir.join("page.html")).unwrap();
-        assert!(html.contains("got q=hello") || html.contains("q=hello"), "{html}");
+        assert!(
+            html.contains("got q=hello") || html.contains("q=hello"),
+            "{html}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("RXT_HTTP_ENGINE");
         std::env::remove_var("RXT_HTTP_SESSION_DIR");
     }
 
     #[test]
-    #[ignore = "hold 跨用例会抢 Lightpanda 页；用 rxt http 实跑验证"]
     fn js_engine_hydrate_click_net() {
         if !cdp::available() {
             return;
         }
+        let _g = env_lock();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let _srv = std::thread::spawn(move || {
@@ -3588,17 +4001,25 @@ fetch('/api').then(r=>r.json()).then(j=>{window.__api=j;document.getElementById(
             }
         });
         let url = format!("http://{addr}/");
-        let dir = std::env::temp_dir().join(format!("rxt-http-js-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rxt-http-js-{}-{}", std::process::id(), now_unix()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
         std::env::set_var("RXT_HTTP_ENGINE", "js");
+        let _ = cdp::hold_quit(&dir);
         let urls = vec![url];
         let opts = HttpOpts {
             engine: Some("js"),
+            timeout: 15,
             ..test_opts(&urls)
         };
         browse::run(&opts, "OPEN", &urls).unwrap();
+        let _ = browse::run(
+            &opts,
+            "WAIT",
+            &["document.getElementById('app')&&document.getElementById('app').innerText.indexOf('hydrated')>=0".into()],
+        );
         let html = std::fs::read_to_string(dir.join("page.html")).unwrap();
         assert!(
             html.contains("hydrated from-js") || html.contains("hydrated"),

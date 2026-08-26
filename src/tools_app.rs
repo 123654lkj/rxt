@@ -341,7 +341,7 @@ pub enum Command {
     Http {
         #[arg(
             default_value = "GET",
-            help = "GET|POST|…|open|snap|read|fill|click|eval|net|wait|storage|import|auth|sso|close|cookies|forms|cli|scan|session"
+            help = "GET|POST|…|open|snap|read|fill|click|eval|net|wait|storage|import|auth|sso|close|purge|cookies|forms|cli|scan|session"
         )]
         method: String,
         #[arg(
@@ -417,6 +417,11 @@ pub enum Command {
             help = "页面引擎: auto|js|static（默认 auto=有 Lightpanda 就跑 JS。环境变量 RXT_HTTP_ENGINE）"
         )]
         engine: Option<String>,
+        #[arg(
+            long = "auth-host",
+            help = "允许自动附加 Bearer/CSRF 的 host（可重复；子域也算。环境变量 RXT_HTTP_AUTH_HOSTS / RXT_BEARER_HOST）"
+        )]
+        auth_hosts: Vec<String>,
     },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
@@ -1751,6 +1756,7 @@ fn execute_command(
             select,
             session,
             engine,
+            auth_hosts,
         } => http::run(http::HttpOpts {
             method: &method,
             urls: &urls,
@@ -1775,6 +1781,7 @@ fn execute_command(
             select: select.as_deref(),
             session: session.as_deref(),
             engine: engine.as_deref(),
+            auth_hosts: &auth_hosts,
         })?,
         Command::Edit {
             path,

@@ -258,10 +258,7 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
         }
         std::thread::sleep(Duration::from_millis(80));
     }
-    anyhow::bail!(
-        "lightpanda 未在 :{port} 起来。日志 {}",
-        log.display()
-    )
+    anyhow::bail!("lightpanda 未在 :{port} 起来。日志 {}", log.display())
 }
 
 fn free_port() -> anyhow::Result<u16> {
@@ -411,7 +408,9 @@ impl Cdp {
     fn wait_ready(&mut self, sid: &str, timeout: Duration) -> anyhow::Result<()> {
         let start = Instant::now();
         loop {
-            let ready = self.eval_str(sid, "document.readyState").unwrap_or_default();
+            let ready = self
+                .eval_str(sid, "document.readyState")
+                .unwrap_or_default();
             let pending = self
                 .eval(sid, "window.__rxt_pending||0")
                 .ok()
@@ -432,6 +431,41 @@ impl Cdp {
 struct HoldMeta {
     port: u16,
     pid: u32,
+    #[serde(default)]
+    secret: String,
+}
+
+fn random_secret() -> String {
+    format!(
+        "{}{}",
+        hex::encode(uuid::Uuid::new_v4().as_bytes()),
+        hex::encode(uuid::Uuid::new_v4().as_bytes())
+    )
+}
+
+fn secret_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() || a.is_empty() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+fn kill_pid(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+        std::thread::sleep(Duration::from_millis(80));
+        if libc::kill(pid as i32, 0) == 0 {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+    let _ = pid;
 }
 
 fn hold_path(dir: &Path) -> PathBuf {
@@ -445,10 +479,28 @@ fn hold_alive(dir: &Path) -> bool {
     let Ok(m) = serde_json::from_str::<HoldMeta>(&raw) else {
         return false;
     };
-    hold_rpc_raw(m.port, &json!({"op": "ping"}))
+    if m.secret.is_empty() {
+        return false;
+    }
+    hold_rpc_raw(m.port, &json!({"op": "ping", "secret": m.secret}))
         .ok()
         .and_then(|v| v.get("ok").and_then(|x| x.as_bool()))
         .unwrap_or(false)
+}
+
+fn inject_hold_secret(dir: &Path, mut req: Value) -> anyhow::Result<Value> {
+    let raw = std::fs::read_to_string(hold_path(dir))?;
+    let m: HoldMeta = serde_json::from_str(&raw)?;
+    if m.secret.is_empty() {
+        anyhow::bail!("hold 无 session secret，请重新 open");
+    }
+    match req.as_object_mut() {
+        Some(obj) => {
+            obj.insert("secret".into(), json!(m.secret));
+        }
+        None => anyhow::bail!("hold rpc 需要 JSON object"),
+    }
+    Ok(req)
 }
 
 fn hold_rpc_raw(port: u16, req: &Value) -> anyhow::Result<Value> {
@@ -466,6 +518,7 @@ fn hold_rpc_raw(port: u16, req: &Value) -> anyhow::Result<Value> {
 
 fn hold_rpc(dir: &Path, req: Value) -> anyhow::Result<Value> {
     ensure_hold(dir)?;
+    let req = inject_hold_secret(dir, req)?;
     let raw = std::fs::read_to_string(hold_path(dir))?;
     let m: HoldMeta = serde_json::from_str(&raw)?;
     let v = hold_rpc_raw(m.port, &req)?;
@@ -487,7 +540,7 @@ fn ensure_hold(dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     let d = dir.to_path_buf();
-    std::fs::create_dir_all(&d)?;
+    super::secure_mkdir(&d)?;
     let exe = std::env::current_exe()?;
     let name = exe
         .file_name()
@@ -537,16 +590,18 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
     );
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let hport = listener.local_addr()?.port();
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(
-        hold_path(dir),
+    let secret = random_secret();
+    super::secure_mkdir(dir)?;
+    super::secure_write(
+        &hold_path(dir),
         serde_json::to_vec_pretty(&HoldMeta {
             port: hport,
             pid: std::process::id(),
+            secret: secret.clone(),
         })?,
     )?;
-    std::fs::write(
-        dir.join("engine.json"),
+    super::secure_write(
+        &dir.join("engine.json"),
         serde_json::to_vec_pretty(&EngineState {
             port: cport,
             pid: cpid,
@@ -572,6 +627,11 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
                 continue;
             }
         };
+        let got = req.get("secret").and_then(|x| x.as_str()).unwrap_or("");
+        if !secret_eq(got, &secret) {
+            let _ = s.write_all(b"{\"ok\":false,\"error\":\"unauthorized\"}\n");
+            continue;
+        }
         let op = req.get("op").and_then(|x| x.as_str()).unwrap_or("");
         let resp = match op {
             "ping" => json!({"ok": true}),
@@ -586,12 +646,10 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
                     Err(e) => json!({"ok": false, "error": e.to_string()}),
                 }
             }
-            "click" | "fill" => {
-                match hold_act(&mut cdp, &sid, &tid, cport, cpid, dir, &req) {
-                    Ok(v) => json!({"ok": true, "value": v}),
-                    Err(e) => json!({"ok": false, "error": e.to_string()}),
-                }
-            }
+            "click" | "fill" => match hold_act(&mut cdp, &sid, &tid, cport, cpid, dir, &req) {
+                Ok(v) => json!({"ok": true, "value": v}),
+                Err(e) => json!({"ok": false, "error": e.to_string()}),
+            },
             "dump" => {
                 let jar = PathBuf::from(
                     req.get("jar")
@@ -614,12 +672,16 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
             },
             "quit" => {
                 let _ = s.write_all(b"{\"ok\":true}\n");
-                break;
+                let _ = std::fs::remove_file(hold_path(dir));
+                let _ = std::fs::remove_file(dir.join("engine.json"));
+                return Ok(());
             }
             _ => json!({"ok": false, "error": format!("unknown op {op}")}),
         };
         let _ = s.write_all(format!("{resp}\n").as_bytes());
     }
+    let _ = std::fs::remove_file(hold_path(dir));
+    let _ = std::fs::remove_file(dir.join("engine.json"));
     Ok(())
 }
 
@@ -653,7 +715,9 @@ fn hold_nav(
         }
     }
     if let Some(arr) = req.get("cookies").and_then(|x| x.as_array()) {
-        if let Ok(more) = serde_json::from_value::<Vec<CookieRec>>(serde_json::Value::Array(arr.clone())) {
+        if let Ok(more) =
+            serde_json::from_value::<Vec<CookieRec>>(serde_json::Value::Array(arr.clone()))
+        {
             upsert_cookies(&mut recs, &more);
         }
     }
@@ -728,12 +792,7 @@ fn hold_act(
     Ok(v)
 }
 
-fn hold_set_cookies(
-    cdp: &mut Cdp,
-    sid: &str,
-    dir: &Path,
-    req: &Value,
-) -> anyhow::Result<usize> {
+fn hold_set_cookies(cdp: &mut Cdp, sid: &str, dir: &Path, req: &Value) -> anyhow::Result<usize> {
     let recs: Vec<CookieRec> = if let Some(arr) = req.get("cookies").and_then(|x| x.as_array()) {
         serde_json::from_value(serde_json::Value::Array(arr.clone()))?
     } else {
@@ -760,10 +819,7 @@ pub(super) fn inject_session_cookies(dir: &Path, recs: &[CookieRec]) -> anyhow::
         return Ok(());
     }
     if hold_path(dir).exists() {
-        let _ = hold_rpc(
-            dir,
-            json!({"op": "cookies", "cookies": recs}),
-        );
+        let _ = hold_rpc(dir, json!({"op": "cookies", "cookies": recs}));
     }
     Ok(())
 }
@@ -800,10 +856,7 @@ pub(super) fn open_js(
 }
 
 pub(super) fn refresh(_opts: &HttpOpts<'_>, dir: &Path, jar: &Path) -> anyhow::Result<()> {
-    hold_rpc(
-        dir,
-        json!({"op": "dump", "jar": jar.display().to_string()}),
-    )?;
+    hold_rpc(dir, json!({"op": "dump", "jar": jar.display().to_string()}))?;
     Ok(())
 }
 
@@ -825,10 +878,16 @@ pub(super) fn fill_js(dir: &Path, id: &str, value: &str) -> anyhow::Result<()> {
 pub(super) fn hold_quit(dir: &Path) -> anyhow::Result<()> {
     if let Ok(raw) = std::fs::read_to_string(hold_path(dir)) {
         if let Ok(m) = serde_json::from_str::<HoldMeta>(&raw) {
-            let _ = hold_rpc_raw(m.port, &json!({"op": "quit"}));
+            if !m.secret.is_empty() {
+                let _ = hold_rpc_raw(m.port, &json!({"op": "quit", "secret": m.secret}));
+            }
+            if m.pid != 0 && m.pid != std::process::id() {
+                kill_pid(m.pid);
+            }
         }
     }
     let _ = std::fs::remove_file(hold_path(dir));
+    let _ = std::fs::remove_file(dir.join("engine.json"));
     Ok(())
 }
 
@@ -838,18 +897,19 @@ pub(super) fn close_js() -> anyhow::Result<()> {
         if let Ok(rd) = std::fs::read_dir(sess) {
             for e in rd.flatten() {
                 let p = e.path();
-                let _ = hold_rpc(&p, json!({"op": "quit"}));
-                let _ = std::fs::remove_file(p.join("hold.json"));
+                if p.is_dir() {
+                    let _ = hold_quit(&p);
+                }
             }
         }
+    }
+    if let Ok(p) = std::env::var("RXT_HTTP_SESSION_DIR") {
+        let _ = hold_quit(Path::new(&p));
     }
     let p = serve_meta_path();
     if let Ok(raw) = std::fs::read_to_string(&p) {
         if let Ok(m) = serde_json::from_str::<ServeMeta>(&raw) {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(m.pid as i32, libc::SIGTERM);
-            }
+            kill_pid(m.pid);
         }
     }
     let _ = std::fs::remove_file(p);
@@ -866,7 +926,7 @@ fn dump_session(
     port: u16,
     tid: &str,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    super::secure_mkdir(dir)?;
     let html = cdp.eval_str(sid, "document.documentElement.outerHTML")?;
     let url = cdp.eval_str(sid, "location.href")?;
     let title = cdp.eval_str(sid, "document.title")?;
@@ -876,6 +936,7 @@ fn dump_session(
         sid,
         r#"(() => { const o=(s)=>{const x={}; try{for(let i=0;i<s.length;i++){const k=s.key(i); x[k]=s.getItem(k);} }catch(e){} return x;}; return {local:o(localStorage), session:o(sessionStorage)}; })()"#,
     )?;
+    let _ = super::record_origin(dir, &url);
     std::fs::write(dir.join("page.html"), html.as_bytes())?;
     std::fs::write(
         dir.join("meta.json"),
@@ -883,9 +944,12 @@ fn dump_session(
     )?;
     std::fs::write(dir.join("refs.json"), serde_json::to_vec_pretty(&refs)?)?;
     std::fs::write(dir.join("net.json"), serde_json::to_vec_pretty(&net)?)?;
-    std::fs::write(dir.join("storage.json"), serde_json::to_vec_pretty(&storage)?)?;
-    std::fs::write(
-        dir.join("engine.json"),
+    super::secure_write(
+        &dir.join("storage.json"),
+        serde_json::to_vec_pretty(&storage)?,
+    )?;
+    super::secure_write(
+        &dir.join("engine.json"),
         serde_json::to_vec_pretty(&EngineState {
             port,
             pid,
@@ -901,12 +965,7 @@ fn dump_session(
     Ok(())
 }
 
-fn inject_cookies(
-    cdp: &mut Cdp,
-    sid: &str,
-    opts: &HttpOpts<'_>,
-    jar: &Path,
-) -> anyhow::Result<()> {
+fn inject_cookies(cdp: &mut Cdp, sid: &str, opts: &HttpOpts<'_>, jar: &Path) -> anyhow::Result<()> {
     let mut recs = if jar.exists() {
         load_netscape(jar).unwrap_or_default()
     } else {
@@ -974,9 +1033,8 @@ fn pull_cookies(cdp: &mut Cdp, sid: &str) -> anyhow::Result<Vec<CookieRec>> {
 }
 
 pub(super) fn load_engine(dir: &Path) -> anyhow::Result<EngineState> {
-    let raw = std::fs::read_to_string(dir.join("engine.json")).map_err(|_| {
-        anyhow::anyhow!("当前会话不是 JS 引擎。rxt http open 会自动用 Lightpanda")
-    })?;
+    let raw = std::fs::read_to_string(dir.join("engine.json"))
+        .map_err(|_| anyhow::anyhow!("当前会话不是 JS 引擎。rxt http open 会自动用 Lightpanda"))?;
     Ok(serde_json::from_str(&raw)?)
 }
 
@@ -991,5 +1049,49 @@ pub(super) fn engine_wanted(opts: &HttpOpts<'_>) -> bool {
         "static" | "http" | "off" | "0" => false,
         "js" | "lightpanda" | "on" | "1" => true,
         _ => available(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{BufRead, Write};
+
+    #[test]
+    fn hold_meta_old_files_have_empty_secret() {
+        let m: HoldMeta = serde_json::from_str(r#"{"port":9,"pid":1}"#).unwrap();
+        assert!(m.secret.is_empty());
+        assert!(!secret_eq(&m.secret, "abc"));
+        assert!(secret_eq("deadbeef", "deadbeef"));
+        assert!(!secret_eq("deadbeef", "deadbeee"));
+    }
+
+    #[test]
+    fn hold_rpc_rejects_missing_secret() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let secret = random_secret();
+        let expect = secret.clone();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            {
+                let mut br = std::io::BufReader::new(&s);
+                let _ = br.read_line(&mut line);
+            }
+            let req: Value = serde_json::from_str(line.trim()).unwrap_or(json!({}));
+            let got = req.get("secret").and_then(|x| x.as_str()).unwrap_or("");
+            let body = if secret_eq(got, &expect) {
+                "{\"ok\":true}\n"
+            } else {
+                "{\"ok\":false,\"error\":\"unauthorized\"}\n"
+            };
+            let _ = s.write_all(body.as_bytes());
+        });
+        let v = hold_rpc_raw(port, &json!({"op": "ping"})).unwrap();
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["error"], json!("unauthorized"));
+        let _ = h.join();
     }
 }

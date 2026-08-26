@@ -27,6 +27,7 @@ pub struct HttpOpts<'a> {
     pub select: Option<&'a str>,
     pub session: Option<&'a str>,
     pub engine: Option<&'a str>,
+    pub auth_hosts: &'a [String],
 }
 
 pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {
