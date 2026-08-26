@@ -24,6 +24,9 @@ pub struct HttpOpts<'a> {
     pub form: &'a [String],
     pub no_probe: bool,
     pub cookie_json: Option<&'a str>,
+    pub select: Option<&'a str>,
+    pub session: Option<&'a str>,
+    pub engine: Option<&'a str>,
 }
 
 pub fn run(_opts: HttpOpts<'_>) -> anyhow::Result<()> {

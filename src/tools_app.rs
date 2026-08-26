@@ -337,17 +337,17 @@ pub enum Command {
         #[arg(long, help = "限制最大结果数")]
         max: Option<usize>,
     },
-    #[command(about = "HTTP 客户端 — forms/cli 包装 HTML，scan 从 JS 抽 API，不走无头浏览器")]
+    #[command(about = "HTTP 客户端 — CLI 打开网页、读数据、点选填写；scan 从 JS 抽 API")]
     Http {
         #[arg(
             default_value = "GET",
-            help = "GET|POST|…|cookies|forms|cli|scan|session"
+            help = "GET|POST|…|open|snap|read|fill|click|eval|net|wait|storage|import|auth|sso|close|cookies|forms|cli|scan|session"
         )]
         method: String,
         #[arg(
             value_name = "URL",
             num_args = 0..,
-            help = "一个或多个 URL；多个则并行请求，-j 打包成一份 JSON"
+            help = "URL，或 click/fill/read 的 @e1"
         )]
         urls: Vec<String>,
         #[arg(short = 'H', long = "header", help = "header: value")]
@@ -372,7 +372,7 @@ pub enum Command {
         output: Option<PathBuf>,
         #[arg(
             long,
-            help = "从本机浏览器导入 Cookie: chrome|edge|firefox|brave|auto（需 cookies feature；Chrome 127+ App-Bound 常失败，改用 --cookie-json。环境变量 RXT_BROWSER）"
+            help = "从本机浏览器导入 Cookie: chrome|edge|firefox|brave|opera|vivaldi|arc|tabbit|all|auto，或 Chromium User Data 目录。Chrome/Edge 127+ App-Bound 常失败，改 firefox / --cookie-json。环境变量 RXT_BROWSER"
         )]
         browser: Option<String>,
         #[arg(
@@ -402,6 +402,21 @@ pub enum Command {
             help = "DevTools Cookie JSON 数组或文件 [{name,value,domain,path}]（环境变量 RXT_COOKIE_JSON）"
         )]
         cookie_json: Option<String>,
+        #[arg(
+            long = "select",
+            help = "从 HTML 抽数据：h1 / #id / .class / [name=q] / table"
+        )]
+        select: Option<String>,
+        #[arg(
+            long = "session",
+            help = "页面会话名（默认 default，环境变量 RXT_HTTP_SESSION）"
+        )]
+        session: Option<String>,
+        #[arg(
+            long = "engine",
+            help = "页面引擎: auto|js|static（默认 auto=有 Lightpanda 就跑 JS。环境变量 RXT_HTTP_ENGINE）"
+        )]
+        engine: Option<String>,
     },
     #[command(about = "结构化文件编辑 — 格式保持")]
     Edit {
@@ -1733,6 +1748,9 @@ fn execute_command(
             form,
             no_probe,
             cookie_json,
+            select,
+            session,
+            engine,
         } => http::run(http::HttpOpts {
             method: &method,
             urls: &urls,
@@ -1754,6 +1772,9 @@ fn execute_command(
             form: &form,
             no_probe,
             cookie_json: cookie_json.as_deref(),
+            select: select.as_deref(),
+            session: session.as_deref(),
+            engine: engine.as_deref(),
         })?,
         Command::Edit {
             path,

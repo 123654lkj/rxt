@@ -1,6 +1,6 @@
 [package]
 name = "rxt"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 description = "Run eXternal Tools — tiny core host that runs installable plugins"
 repository = "https://github.com/123654lkj/rxt"
@@ -20,8 +20,8 @@ default = ["remote", "xz", "http"]
 remote = ["russh", "tokio", "shellexpand"]
 # .tar.xz/.txz 解压(xz2 → liblzma,需 gcc)。本地无 gcc 时关掉此 feature。
 xz = ["xz2"]
-# HTTP 客户端 + 星枢 mem（ureq）。Windows 默认可编。
-http = ["ureq"]
+# HTTP 客户端 + 星枢 mem（ureq）+ 页面 JS 引擎（Lightpanda CDP，无 TLS）。
+http = ["ureq", "tungstenite"]
 # 读本机浏览器 Cookie（rookie/libesedb，Windows 常编不过）。
 cookies = ["http", "rookie"]
 # 旧编译命令兼容：http + cookies
@@ -45,6 +45,7 @@ notify = "7"
 dirs = "5"
 shellexpand = { version = "3", optional = true }
 ureq = { version = "3.3.0", features = ["json"], optional = true }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 rookie = { version = "0.5.6", optional = true }
 rayon = "1"
 regex = "1"

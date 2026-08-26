@@ -250,6 +250,34 @@ rxt ps --host huhu --top 5          # 远程查看
 #### http 详解
 
 ```bash
+# 页面会话（默认 Lightpanda JS 引擎，不跑 Chrome）
+rxt http open https://example.com                 # 打开（执行 JS），列出 @eN
+rxt http snap                                     # 可交互元素
+rxt http read / rxt http read @e1                 # 正文 / 元素
+rxt http fill @e2 hello && rxt http click @e3     # 填 + 点（JS 事件也生效）
+rxt http eval 'document.title'                    # 跑 JS
+rxt http net                                      # 拦截到的 fetch/XHR（含 JSON 正文）
+rxt http storage                                  # localStorage / sessionStorage
+rxt http wait '#app'                              # 等选择器或 JS 表达式
+rxt http close                                    # 关掉引擎
+rxt http --engine static open URL                 # 强制纯 HTTP（无 JS）
+rxt http import --browser firefox                 # Firefox
+rxt http import --browser edge                    # Edge（127+ 常需管理员）
+rxt http import --browser tabbit                  # Tabbit（扫 User Data）
+rxt http import --browser all                     # 所有已装主流浏览器合并
+rxt http import --browser "/path/to/User Data"    # 任意 Chromium 内核目录
+rxt http import --browser chrome github.com       # 只导入某域
+rxt http import --cookie-json cookies.json
+rxt http auth                                 # 看当前登录态（cookie / Bearer / CSRF）
+rxt http sso https://app.example.com          # 打开并收割 SSO（cookie+localStorage token）
+rxt http GET https://app.example.com/api/me   # 自动带会话 Cookie + Bearer + CSRF
+# RXT_BEARER=eyJ...  也可直接灌 token
+rxt http cookies --browser firefox github.com     # 列出并写入当前会话登录态
+# 会话目录 ~/.rxt/http-session/<名>/cookies.txt cookies.json login.json storage.json
+# 内存：默认 V8 堆 64MB（RXT_HTTP_HEAP_MB），关 iframe/worker
+rxt http GET url --select h1                      # 一次性抽标签
+rxt http GET url --select table                   # 表格 → JSON
+
 rxt http GET https://a.example/ https://b.example/ -j   # 两个网页并行，一份 JSON
 rxt http GET https://api.example.com              # GET（默认 Chrome UA，超时生效）
 rxt http POST https://api.example.com -d '{"key":"val"}' -j   # POST JSON

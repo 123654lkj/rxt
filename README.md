@@ -197,13 +197,19 @@ src/lib.rs         → 共享实现
 | feature | 默认 | 作用 |
 |---------|------|------|
 | `remote` | ✅ | SSH（russh） |
-| `http` | ✅ | `http` / `mem`（ureq） |
+| `http` | ✅ | `http` / `mem`（ureq + Lightpanda CDP） |
 | `xz` | ✅ | `.tar.xz` |
 | `cookies` | ❌ | 读浏览器 Cookie（Windows 常编不过） |
 
 ---
 
 ## 版本
+
+### v0.10.1
+
+- `rxt http`：CLI 网页会话（open/snap/read/fill/click/eval/net/wait）
+- Lightpanda JS 引擎（不跑 Chrome），拦截 XHR/fetch，会话登录态
+- Cookie 从 Chrome/Edge/Firefox/Tabbit 等主流浏览器导入，GET/POST 自动带 Cookie + SSO Bearer/CSRF
 
 ### v0.10.0
 

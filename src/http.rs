@@ -1,11 +1,13 @@
-//! HTTP 客户端 — curl 的 LLM 友好版，可借用本机浏览器 Cookie。
+//! HTTP 客户端 — CLI 访问网页、读数据、操作数据。不跑无头浏览器。
 //!
 //! - GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS
-//! - `forms` / `cli`：把 HTML 收成 CLI（表单+`<a>`），不走无头浏览器
+//! - 页面会话：`open` / `snap` / `read` / `fill` / `click` / `attr` / `submit`
+//! - `forms` / `cli`：把 HTML 收成 CLI（表单+`<a>`）
 //! - `scan`（别名 `apis`）：拉入口 JS，抽出 API，并探测哪个 host 真返回 JSON
 //! - `session`：探测登录 Cookie 是否仍有效（过期 exit 2）
 //! - `--form` 提交表单；`--browser` / `--cookie-jar` / `--cookie-json` 带登录态
-//! - 环境变量回退：`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER`
+//! - `--select` 抽 CSS 子集（h1 / #id / .class / [name=] / table）
+//! - 环境变量回退：`RXT_COOKIE_JSON` / `RXT_COOKIE_JAR` / `RXT_BROWSER` / `RXT_HTTP_SESSION`
 //! - `--text` 抽正文 / `--links` 抽链接 / `--budget` 截断 / `-o` 落盘
 //! - 多个 URL 并行请求；`-j` 打包成一份 JSON
 
@@ -18,7 +20,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[path = "http_browse.rs"]
+mod browse;
+#[path = "http_cdp.rs"]
+mod cdp;
 
 const DEFAULT_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const MAX_BODY: usize = 32 * 1024 * 1024;
@@ -44,9 +51,12 @@ pub struct HttpOpts<'a> {
     pub form: &'a [String],
     pub no_probe: bool,
     pub cookie_json: Option<&'a str>,
+    pub select: Option<&'a str>,
+    pub session: Option<&'a str>,
+    pub engine: Option<&'a str>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CookieRec {
     domain: String,
     path: String,
@@ -62,6 +72,9 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         return dump_cookies(&opts);
     }
     let (method, urls) = collect_urls(opts.method, opts.urls);
+    if browse::is_page_cmd(&method) {
+        return browse::run(&opts, &method, &urls);
+    }
     let wrap = matches!(method.as_str(), "FORMS" | "CLI" | "WRAP" | "SCAN" | "APIS");
     let session_mode = method == "SESSION";
     let fetch_verb: &str = if wrap || session_mode {
@@ -85,53 +98,13 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         return run_batch(&opts, &method, &urls, wrap, fetch_verb);
     }
     let url = urls[0].as_str();
-
-    let cookie_env = cookie_env();
-    let cookie_json = opts.cookie_json.or(cookie_env.json.as_deref());
-    let cookie_jar: Option<&Path> = opts.cookie_jar.or(cookie_env.jar.as_deref());
-    let browser = opts.browser.or(cookie_env.browser.as_deref());
-
+    let ident = load_identity(&opts, url)?;
     let host = host_of(url).unwrap_or_default();
-    let jar_cookies = if let Some(p) = cookie_jar {
-        load_netscape(p)?
-    } else {
-        Vec::new()
-    };
-    let mut browser_src: Option<String> = None;
-    let browser_cookies = if let Some(b) = browser {
-        let domains = domain_candidates(&host);
-        let (src, recs) = load_browser(b, Some(domains))?;
-        browser_src = Some(src);
-        recs
-    } else {
-        Vec::new()
-    };
-    let extra = parse_cookie_args(opts.cookies);
-    let json_cookies = if let Some(raw) = cookie_json {
-        load_cookie_json(raw, &host)?
-    } else {
-        Vec::new()
-    };
-    let merged = merge_cookies(
-        &merge_cookies(&jar_cookies, &browser_cookies, &extra),
-        &json_cookies,
-        &[],
-    );
     let https = url.starts_with("https://");
-    let cookie_header = cookie_header_for(&merged, &host, path_of(url), https);
-    if let Some(src) = &browser_src {
-        let sent = cookie_header
-            .as_ref()
-            .map(|s| s.split("; ").count())
-            .unwrap_or(0);
-        eprintln!(
-            "# 从 {} 读到 {} 条，本次按 host={} 发送 {} 条",
-            src,
-            browser_cookies.len(),
-            host,
-            sent
-        );
-    }
+    let cookie_header = cookie_header_for(&ident.cookies, &host, path_of(url), https);
+    let merged = ident.cookies.clone();
+    let cookie_jar: Option<&Path> = ident.jar.as_deref();
+    ident.trace();
 
     let timeout = Duration::from_secs(opts.timeout.max(1));
     let config = ureq::Agent::config_builder()
@@ -153,8 +126,10 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
     let user_has_cookie = has_header(opts.headers, "cookie");
     let user_has_ct = has_header(opts.headers, "content-type");
     let user_has_referer = has_header(opts.headers, "referer");
+    let user_has_auth = has_header(opts.headers, "authorization") || opts.auth.is_some();
     let ua = opts.user_agent.unwrap_or(DEFAULT_UA);
     let auto_referer = origin_of(url).map(|o| format!("{o}/"));
+    let ident_headers = ident.headers.clone();
 
     macro_rules! paint {
         ($builder:expr) => {{
@@ -174,6 +149,22 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
             }
             if let Some(ref a) = auth_header {
                 r = r.header("Authorization", a);
+            } else if !user_has_auth {
+                if let Some((_, v)) = ident_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                {
+                    r = r.header("Authorization", v);
+                }
+            }
+            for (k, v) in &ident_headers {
+                if k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("cookie") {
+                    continue;
+                }
+                if has_header(opts.headers, k) {
+                    continue;
+                }
+                r = r.header(k, v);
             }
             for h in opts.headers {
                 let Some((k, v)) = h.split_once(':') else {
@@ -206,7 +197,7 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
             r.send(body_data)
         }
         _ => anyhow::bail!(
-            "不支持的方法: {}（GET POST PUT DELETE HEAD OPTIONS PATCH；列 Cookie 用 cookies；包装网页用 forms / cli / scan；探登录用 session）",
+            "不支持的方法: {}（GET POST PUT DELETE HEAD OPTIONS PATCH；页面: open/snap/read/fill/click/attr/submit；列 Cookie 用 cookies；包装网页用 forms / cli / scan；探登录用 session）",
             opts.method
         ),
     };
@@ -235,6 +226,7 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         let mut all = merged.clone();
         upsert_cookies(&mut all, &set_cookies);
         save_netscape(jar, &all)?;
+        let _ = persist_login(&browse::session_dir(opts.session), &all, "set-cookie");
         eprintln!(
             "# cookie-jar {} 条 → {} (set-cookie {})",
             all.len(),
@@ -316,9 +308,10 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
             "# SPA 壳（无 <form>）。下一步: rxt http scan {}{}",
             url,
             if cookie_jar.is_some()
-                || browser.is_some()
-                || cookie_json.is_some()
+                || opts.browser.is_some()
+                || opts.cookie_json.is_some()
                 || !opts.cookies.is_empty()
+                || !ident.cookies.is_empty()
             {
                 ""
             } else {
@@ -359,7 +352,14 @@ pub fn run(opts: HttpOpts<'_>) -> anyhow::Result<()> {
         }
     }
 
-    let printable = if opts.text {
+    let printable = if let Some(sel) = opts.select {
+        let parts = browse::extract_select(&raw, sel);
+        if parts.is_empty() {
+            format!("# --select {sel}  无匹配")
+        } else {
+            parts.join("\n")
+        }
+    } else if opts.text {
         html_to_text(&raw)
     } else if looks_text {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -526,6 +526,53 @@ fn fetch_parallel(opts: &HttpOpts<'_>, fetch_verb: &str, urls: &[String]) -> Vec
         .collect()
 }
 
+fn request_one(
+    opts: &HttpOpts<'_>,
+    url: &str,
+    fetch_verb: &str,
+    form: &[String],
+    jar: Option<&Path>,
+) -> FetchOut {
+    let timeout = Duration::from_secs(opts.timeout.max(1));
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let cookie_env = cookie_env();
+    let jar_path = jar.or(opts.cookie_jar).or(cookie_env.jar.as_deref());
+    let jar_cookies = jar_path
+        .and_then(|p| load_netscape(p).ok())
+        .unwrap_or_default();
+    let extra = parse_cookie_args(opts.cookies);
+    let out = match fetch_one_inner(
+        opts,
+        url,
+        fetch_verb,
+        &agent,
+        &jar_cookies,
+        &extra,
+        form,
+    ) {
+        Ok(out) => out,
+        Err(e) => {
+            return FetchOut {
+                url: url.to_string(),
+                host: host_of(url).unwrap_or_default(),
+                status: 0,
+                header_pairs: Vec::new(),
+                bytes: Vec::new(),
+                merged_cookies: jar_cookies,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+    if let Some(p) = jar_path {
+        let _ = save_netscape(p, &out.merged_cookies);
+    }
+    out
+}
+
 fn fetch_one(
     opts: &HttpOpts<'_>,
     url: &str,
@@ -534,7 +581,7 @@ fn fetch_one(
     jar_cookies: &[CookieRec],
     extra: &[CookieRec],
 ) -> FetchOut {
-    match fetch_one_inner(opts, url, fetch_verb, agent, jar_cookies, extra) {
+    match fetch_one_inner(opts, url, fetch_verb, agent, jar_cookies, extra, opts.form) {
         Ok(out) => out,
         Err(e) => FetchOut {
             url: url.to_string(),
@@ -555,31 +602,19 @@ fn fetch_one_inner(
     agent: &ureq::Agent,
     jar_cookies: &[CookieRec],
     extra: &[CookieRec],
+    form: &[String],
 ) -> anyhow::Result<FetchOut> {
-    let cookie_env = cookie_env();
-    let cookie_json = opts.cookie_json.or(cookie_env.json.as_deref());
-    let browser = opts.browser.or(cookie_env.browser.as_deref());
+    let ident = load_identity(opts, url)?;
+    let mut merged = ident.cookies.clone();
+    upsert_cookies(&mut merged, jar_cookies);
+    upsert_cookies(&mut merged, extra);
     let host = host_of(url).unwrap_or_default();
-    let browser_cookies = if let Some(b) = browser {
-        load_browser(b, Some(domain_candidates(&host)))?.1
-    } else {
-        Vec::new()
-    };
-    let json_cookies = if let Some(raw) = cookie_json {
-        load_cookie_json(raw, &host)?
-    } else {
-        Vec::new()
-    };
-    let merged = merge_cookies(
-        &merge_cookies(jar_cookies, &browser_cookies, extra),
-        &json_cookies,
-        &[],
-    );
     let https = url.starts_with("https://");
     let cookie_header = cookie_header_for(&merged, &host, path_of(url), https);
+    let ident_headers = ident.headers.clone();
 
     let auth_header = build_auth_header(opts.auth);
-    let form_body = encode_form_fields(opts.form);
+    let form_body = encode_form_fields(form);
     let body_data: &str = if !form_body.is_empty() {
         &form_body
     } else {
@@ -589,6 +624,7 @@ fn fetch_one_inner(
     let user_has_cookie = has_header(opts.headers, "cookie");
     let user_has_ct = has_header(opts.headers, "content-type");
     let user_has_referer = has_header(opts.headers, "referer");
+    let user_has_auth = has_header(opts.headers, "authorization") || opts.auth.is_some();
     let ua = opts.user_agent.unwrap_or(DEFAULT_UA);
     let auto_referer = origin_of(url).map(|o| format!("{o}/"));
 
@@ -610,6 +646,22 @@ fn fetch_one_inner(
             }
             if let Some(ref a) = auth_header {
                 r = r.header("Authorization", a);
+            } else if !user_has_auth {
+                if let Some((_, v)) = ident_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                {
+                    r = r.header("Authorization", v);
+                }
+            }
+            for (k, v) in &ident_headers {
+                if k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("cookie") {
+                    continue;
+                }
+                if has_header(opts.headers, k) {
+                    continue;
+                }
+                r = r.header(k, v);
             }
             for h in opts.headers {
                 let Some((k, v)) = h.split_once(':') else {
@@ -633,7 +685,7 @@ fn fetch_one_inner(
                 _ => paint!(agent.patch(url)),
             };
             if !user_has_ct {
-                if opts.json_body && opts.form.is_empty() {
+                if opts.json_body && form.is_empty() {
                     r = r.header("Content-Type", "application/json");
                 } else {
                     r = r.header("Content-Type", "application/x-www-form-urlencoded");
@@ -973,11 +1025,19 @@ fn dump_cookies(opts: &HttpOpts<'_>) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let sess = browse::session_dir(opts.session);
+    persist_login(&sess, &recs, &src)?;
     let cookie_jar: Option<&Path> = opts.cookie_jar.or(env.jar.as_deref());
     if let Some(jar) = cookie_jar {
-        save_netscape(jar, &recs)?;
-        eprintln!("# 已写入 cookie-jar {} ({} 条)", jar.display(), recs.len());
+        if jar != sess.join("cookies.txt") {
+            save_netscape(jar, &recs)?;
+            eprintln!("# 已写入 cookie-jar {} ({} 条)", jar.display(), recs.len());
+        }
     }
+    eprintln!(
+        "# 登录态已存 {} (cookies.txt / cookies.json / login.json)",
+        sess.display()
+    );
 
     eprintln!(
         "# {} {} 条 (domain={})",
@@ -999,44 +1059,201 @@ fn dump_cookies(opts: &HttpOpts<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+const BROWSER_ALL: &[&str] = &[
+    "chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi", "arc", "zen",
+    "librewolf", "opera-gx", "tabbit",
+];
+
 fn load_browser(
     name: &str,
     domains: Option<Vec<String>>,
 ) -> anyhow::Result<(String, Vec<CookieRec>)> {
+    let raw = name.trim();
+    let key = raw.to_ascii_lowercase().replace('_', "-");
+    if Path::new(raw).is_dir() {
+        let recs = load_chromium_dir(Path::new(raw), domains)?;
+        return Ok((raw.to_string(), recs));
+    }
+    if key == "auto" {
+        let mut errs = Vec::new();
+        for cand in BROWSER_ALL {
+            match load_browser(cand, domains.clone()) {
+                Ok(pair) if !pair.1.is_empty() => return Ok(pair),
+                Ok(_) => errs.push(format!("{cand}: 0 cookies")),
+                Err(e) => errs.push(format!("{cand}: {e}")),
+            }
+        }
+        anyhow::bail!(
+            "auto 未读到浏览器 Cookie。{}\nChrome/Edge 127+ 常需管理员；Firefox / --cookie-json 更稳。",
+            errs.join(" | ")
+        );
+    }
+    if key == "all" {
+        let mut recs = Vec::new();
+        let mut srcs = Vec::new();
+        for cand in BROWSER_ALL {
+            match load_browser(cand, domains.clone()) {
+                Ok((_, r)) if !r.is_empty() => {
+                    srcs.push(format!("{cand}:{}", r.len()));
+                    recs.extend(r);
+                }
+                _ => {}
+            }
+        }
+        if recs.is_empty() {
+            anyhow::bail!("all 未读到任何浏览器 Cookie");
+        }
+        return Ok((srcs.join(","), recs));
+    }
+    if key == "tabbit" || key == "tabbit-browser" {
+        return load_tabbit(domains);
+    }
     #[cfg(not(feature = "cookies"))]
     {
-        return load_browser_python(name, domains);
+        return load_browser_python(&key, domains);
     }
     #[cfg(feature = "cookies")]
     {
-        let key = name.trim().to_ascii_lowercase();
-        if key == "auto" {
-            let mut errs = Vec::new();
-            for cand in ["chrome", "edge", "firefox", "brave"] {
-                match load_browser(cand, domains.clone()) {
-                    Ok(pair) if !pair.1.is_empty() => return Ok(pair),
-                    Ok(_) => errs.push(format!("{cand}: 0 cookies")),
-                    Err(e) => errs.push(format!("{cand}: {e}")),
-                }
-            }
-            anyhow::bail!(
-            "auto 未读到浏览器 Cookie。{}\nChrome 127+ 可能要管理员运行；或改用 --browser firefox / --cookie-jar",
-            errs.join(" | ")
-        );
-        }
-
         let recs = match key.as_str() {
             "chrome" => map_rookie(rookie::chrome(domains)),
             "edge" => map_rookie(rookie::edge(domains)),
             "firefox" => map_rookie(rookie::firefox(domains)),
             "brave" => map_rookie(rookie::brave(domains)),
             "chromium" => map_rookie(rookie::chromium(domains)),
-            other => {
-                anyhow::bail!("未知浏览器: {other}（chrome|edge|firefox|brave|chromium|auto）")
-            }
+            "opera" => map_rookie(rookie::opera(domains)),
+            "vivaldi" => map_rookie(rookie::vivaldi(domains)),
+            "arc" => map_rookie(rookie::arc(domains)),
+            "zen" => map_rookie(rookie::zen(domains)),
+            "librewolf" | "libre-wolf" => map_rookie(rookie::librewolf(domains)),
+            "opera-gx" | "operagx" => map_rookie(rookie::opera_gx(domains)),
+            "octo" | "octo-browser" => map_rookie(rookie::octo_browser(domains)),
+            "cachy" => map_rookie(rookie::cachy(domains)),
+            #[cfg(target_os = "macos")]
+            "safari" => map_rookie(rookie::safari(domains)),
+            #[cfg(target_os = "windows")]
+            "ie" | "internet-explorer" => map_rookie(rookie::internet_explorer(domains)),
+            other => anyhow::bail!(
+                "未知浏览器: {other}\n支持: chrome|edge|firefox|brave|chromium|opera|vivaldi|arc|zen|librewolf|opera-gx|tabbit|all|auto，或 User Data 目录路径"
+            ),
         }?;
         Ok((key, recs))
     }
+}
+
+fn tabbit_roots() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    let home = dirs::home_dir().unwrap_or_default();
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            for n in ["Tabbit", "Tabbit Browser", "tabbit", "TabbitAI"] {
+                v.push(PathBuf::from(&local).join(n).join("User Data"));
+            }
+        }
+        if let Ok(roam) = std::env::var("APPDATA") {
+            for n in ["Tabbit", "Tabbit Browser", "tabbit"] {
+                v.push(PathBuf::from(&roam).join(n).join("User Data"));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let base = home.join("Library").join("Application Support");
+        for n in ["Tabbit", "Tabbit Browser", "tabbit"] {
+            v.push(base.join(n));
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let cfg = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".config"));
+        for n in ["tabbit", "Tabbit", "tabbit-browser", "Tabbit Browser"] {
+            v.push(cfg.join(n));
+        }
+    }
+    let _ = home;
+    v
+}
+
+fn chromium_cookie_pairs(user_data: &Path) -> Vec<(PathBuf, PathBuf)> {
+    if !user_data.is_dir() {
+        return Vec::new();
+    }
+    let local_state = user_data.join("Local State");
+    let mut profiles = vec![user_data.join("Default")];
+    if let Ok(rd) = std::fs::read_dir(user_data) {
+        for e in rd.flatten() {
+            let n = e.file_name();
+            if n.to_string_lossy().starts_with("Profile ") {
+                profiles.push(e.path());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for p in profiles {
+        for c in [p.join("Network").join("Cookies"), p.join("Cookies")] {
+            if c.is_file() {
+                out.push((local_state.clone(), c));
+            }
+        }
+    }
+    out
+}
+
+fn load_chromium_dir(
+    user_data: &Path,
+    domains: Option<Vec<String>>,
+) -> anyhow::Result<Vec<CookieRec>> {
+    let pairs = chromium_cookie_pairs(user_data);
+    if pairs.is_empty() {
+        anyhow::bail!("不是 Chromium User Data（没找到 Cookies）: {}", user_data.display());
+    }
+    #[cfg(feature = "cookies")]
+    {
+        let mut recs = Vec::new();
+        let mut last = None;
+        for (ls, db) in pairs {
+            let db_s = db.to_string_lossy();
+            let ls_s = ls.to_string_lossy();
+            match map_rookie(rookie::any_browser(
+                db_s.as_ref(),
+                domains.clone(),
+                Some(ls_s.as_ref()),
+            )) {
+                Ok(r) => recs.extend(r),
+                Err(e) => last = Some(e),
+            }
+        }
+        if recs.is_empty() {
+            if let Some(e) = last {
+                return Err(e);
+            }
+            anyhow::bail!("User Data 里 Cookie 为空: {}", user_data.display());
+        }
+        return Ok(recs);
+    }
+    #[cfg(not(feature = "cookies"))]
+    {
+        load_browser_python_dir(user_data, domains)
+    }
+}
+
+fn load_tabbit(domains: Option<Vec<String>>) -> anyhow::Result<(String, Vec<CookieRec>)> {
+    let mut last = "未找到 Tabbit User Data 目录".to_string();
+    for root in tabbit_roots() {
+        if !root.is_dir() {
+            continue;
+        }
+        match load_chromium_dir(&root, domains.clone()) {
+            Ok(recs) if !recs.is_empty() => return Ok(("tabbit".into(), recs)),
+            Ok(_) => last = format!("{}: 0 cookies", root.display()),
+            Err(e) => last = format!("{}: {e}", root.display()),
+        }
+    }
+    anyhow::bail!(
+        "Tabbit Cookie 读失败。{last}\n也可 --browser '/path/to/Tabbit/User Data' 或 Cookie-Editor 导出 --cookie-json"
+    )
 }
 
 #[cfg(feature = "cookies")]
@@ -1079,6 +1296,7 @@ fn load_browser_python(
     cmd.arg("-")
         .env("RXT_BROWSER_NAME", name)
         .env("RXT_COOKIE_DOMAINS", domains.unwrap_or_default().join(","))
+        .env("RXT_CHROMIUM_DIR", "")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1107,6 +1325,47 @@ fn load_browser_python(
     let stdout = String::from_utf8_lossy(&out.stdout);
     let recs = parse_cookie_json(stdout.trim(), "")?;
     Ok((name.trim().to_ascii_lowercase(), recs))
+}
+
+#[cfg(not(feature = "cookies"))]
+fn load_browser_python_dir(
+    dir: &Path,
+    domains: Option<Vec<String>>,
+) -> anyhow::Result<Vec<CookieRec>> {
+    let py = python_with_rookiepy()?;
+    let mut cmd = Command::new(&py);
+    if py.eq_ignore_ascii_case("py") {
+        cmd.arg("-3");
+    }
+    cmd.arg("-")
+        .env("RXT_BROWSER_NAME", "chromium-dir")
+        .env("RXT_COOKIE_DOMAINS", domains.unwrap_or_default().join(","))
+        .env("RXT_CHROMIUM_DIR", dir.as_os_str())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("启动 Python 失败: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("无法写入 Python stdin"))?;
+        stdin.write_all(include_bytes!("http_rookie.py"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| anyhow::anyhow!("等待 Python 失败: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr));
+    }
+    parse_cookie_json(String::from_utf8_lossy(&out.stdout).trim(), "")
 }
 
 #[cfg(not(feature = "cookies"))]
@@ -1294,6 +1553,392 @@ fn save_netscape(path: &Path, cookies: &[CookieRec]) -> anyhow::Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn cookies_to_devtools(recs: &[CookieRec]) -> serde_json::Value {
+    serde_json::Value::Array(
+        recs.iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "value": c.value,
+                    "domain": c.domain,
+                    "path": if c.path.is_empty() { "/" } else { &c.path },
+                    "secure": c.secure,
+                    "httpOnly": c.http_only,
+                    "expirationDate": c.expires,
+                })
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn persist_login(
+    dir: &Path,
+    recs: &[CookieRec],
+    src: &str,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    save_netscape(&dir.join("cookies.txt"), recs)?;
+    std::fs::write(
+        dir.join("cookies.json"),
+        serde_json::to_vec_pretty(&cookies_to_devtools(recs))?,
+    )?;
+    let mut domains: BTreeMap<String, usize> = BTreeMap::new();
+    for c in recs {
+        *domains.entry(c.domain.clone()).or_insert(0) += 1;
+    }
+    std::fs::write(
+        dir.join("login.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "imported_from": src,
+            "saved_at": now_unix(),
+            "cookies": recs.len(),
+            "domains": domains,
+        }))?,
+    )?;
+    Ok(())
+}
+
+pub(super) fn gather_cookies(
+    opts: &HttpOpts<'_>,
+    host_hint: Option<&str>,
+) -> anyhow::Result<(String, Vec<CookieRec>)> {
+    let mut src = "session".to_string();
+    let mut recs: Vec<CookieRec> = Vec::new();
+    let env = cookie_env();
+    let browser = opts.browser.or(env.browser.as_deref());
+    if let Some(b) = browser {
+        let domains = host_hint.map(|h| domain_candidates(h));
+        match load_browser(b, domains) {
+            Ok((s, r)) => {
+                src = s;
+                recs.extend(r);
+            }
+            Err(e) => eprintln!("# 浏览器 Cookie 跳过: {e}"),
+        }
+    }
+    let cookie_json = opts.cookie_json.or(env.json.as_deref());
+    if let Some(raw) = cookie_json {
+        recs.extend(load_cookie_json(raw, host_hint.unwrap_or(""))?);
+        if src == "session" {
+            src = "cookie-json".into();
+        }
+    }
+    let extra = parse_cookie_args(opts.cookies);
+    if !extra.is_empty() {
+        recs.extend(extra);
+        if src == "session" {
+            src = "cookie".into();
+        }
+    }
+    Ok((src, recs))
+}
+
+struct Identity {
+    cookies: Vec<CookieRec>,
+    headers: Vec<(String, String)>,
+    jar: Option<PathBuf>,
+    notes: Vec<String>,
+}
+
+impl Identity {
+    fn trace(&self) {
+        if self.cookies.is_empty() && self.headers.is_empty() {
+            return;
+        }
+        let bearer = self
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+        let csrf = self.headers.iter().any(|(k, _)| {
+            let l = k.to_ascii_lowercase();
+            l.contains("csrf") || l.contains("xsrf")
+        });
+        eprintln!(
+            "# identity cookies={} bearer={} csrf={} {}",
+            self.cookies.len(),
+            if bearer { "yes" } else { "no" },
+            if csrf { "yes" } else { "no" },
+            self.notes.join(" ")
+        );
+    }
+}
+
+pub(super) fn load_identity(opts: &HttpOpts<'_>, url: &str) -> anyhow::Result<Identity> {
+    let dir = browse::session_dir(opts.session);
+    let host = host_of(url).unwrap_or_default();
+    let env = cookie_env();
+    let jar = opts
+        .cookie_jar
+        .map(|p| p.to_path_buf())
+        .or(env.jar.clone())
+        .unwrap_or_else(|| dir.join("cookies.txt"));
+    let mut recs = if jar.exists() {
+        load_netscape(&jar).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let sess_json = dir.join("cookies.json");
+    if sess_json.exists() {
+        if let Ok(more) = load_cookie_json(&sess_json.to_string_lossy(), &host) {
+            upsert_cookies(&mut recs, &more);
+        }
+    }
+    let host_hint = if host.is_empty() {
+        None
+    } else {
+        Some(host.as_str())
+    };
+    let (src, more) = gather_cookies(opts, host_hint)?;
+    upsert_cookies(&mut recs, &more);
+    let mut notes = Vec::new();
+    if !src.is_empty() && src != "session" {
+        notes.push(format!("from={src}"));
+    }
+    let mut headers = sso_headers_from_session(&dir, &recs);
+    if let Ok(raw) = std::fs::read_to_string(dir.join("headers.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let obj = v
+                .get("headers")
+                .and_then(|h| h.as_object())
+                .or_else(|| v.as_object());
+            if let Some(obj) = obj {
+                for (k, val) in obj {
+                    if k == "headers" {
+                        continue;
+                    }
+                    if let Some(s) = val.as_str() {
+                        headers.push((k.clone(), s.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(b) = std::env::var("RXT_BEARER") {
+        let b = b.trim();
+        if !b.is_empty()
+            && !headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        {
+            let v = if b.to_ascii_lowercase().starts_with("bearer ") {
+                b.to_string()
+            } else {
+                format!("Bearer {b}")
+            };
+            headers.push(("Authorization".into(), v));
+            notes.push("env=RXT_BEARER".into());
+        }
+    }
+    Ok(Identity {
+        cookies: recs,
+        headers,
+        jar: Some(jar),
+        notes,
+    })
+}
+
+fn sso_headers_from_session(dir: &Path, cookies: &[CookieRec]) -> Vec<(String, String)> {
+    let mut headers = Vec::new();
+    if let Some(t) = token_from_storage(dir).or_else(|| token_from_cookies(cookies)) {
+        let v = if t.to_ascii_lowercase().starts_with("bearer ") {
+            t
+        } else {
+            format!("Bearer {t}")
+        };
+        headers.push(("Authorization".into(), v));
+    }
+    if let Some(csrf) = csrf_from_cookies(cookies).or_else(|| csrf_from_storage(dir)) {
+        headers.push(("X-CSRF-Token".into(), csrf.clone()));
+        headers.push(("X-XSRF-TOKEN".into(), csrf));
+    }
+    headers
+}
+
+fn token_from_storage(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join("storage.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let mut found = Vec::new();
+    for bag in ["local", "session"] {
+        let Some(obj) = v.get(bag).and_then(|x| x.as_object()) else {
+            continue;
+        };
+        for (k, val) in obj {
+            let s = val
+                .as_str()
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| val.to_string());
+            if let Some(t) = extract_token_value(k, &s) {
+                found.push((k.to_ascii_lowercase(), t));
+            }
+        }
+    }
+    pick_best_token(found)
+}
+
+fn token_from_cookies(cookies: &[CookieRec]) -> Option<String> {
+    let mut found = Vec::new();
+    for c in cookies {
+        if let Some(t) = extract_token_value(&c.name, &c.value) {
+            found.push((c.name.to_ascii_lowercase(), t));
+        }
+    }
+    pick_best_token(found)
+}
+
+fn pick_best_token(mut found: Vec<(String, String)>) -> Option<String> {
+    if found.is_empty() {
+        return None;
+    }
+    found.sort_by(|a, b| token_score(&b.0).cmp(&token_score(&a.0)));
+    Some(found.into_iter().next().unwrap().1)
+}
+
+fn token_score(key: &str) -> i32 {
+    if key.contains("access") {
+        80
+    } else if key.contains("id_token") || key.contains("idtoken") {
+        70
+    } else if key.contains("jwt") {
+        60
+    } else if key.contains("login") {
+        50
+    } else if key.contains("auth") || key.contains("token") || key.contains("sso") {
+        40
+    } else {
+        0
+    }
+}
+
+fn extract_token_value(key: &str, val: &str) -> Option<String> {
+    let k = key.to_ascii_lowercase();
+    let hit = [
+        "token",
+        "jwt",
+        "access",
+        "id_token",
+        "authorization",
+        "auth",
+        "sso",
+        "login",
+        "sessionid",
+        "sid",
+    ]
+    .iter()
+    .any(|t| k.contains(t));
+    if !hit {
+        return None;
+    }
+    let v = val.trim();
+    if v.is_empty() || v == "null" || v == "undefined" {
+        return None;
+    }
+    if v.starts_with('{') {
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(v) {
+            for kk in [
+                "access_token",
+                "id_token",
+                "token",
+                "accessToken",
+                "idToken",
+                "jwt",
+            ] {
+                if let Some(s) = j.get(kk).and_then(|x| x.as_str()) {
+                    if !s.is_empty() {
+                        return Some(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if k.contains("sid") || k.contains("session") {
+        return None; // 会话 cookie 走 Cookie 头，不当 Bearer
+    }
+    if v.len() < 12 && !looks_like_jwt(v) {
+        return None;
+    }
+    Some(v.trim_start_matches("Bearer ").trim_start_matches("bearer ").to_string())
+}
+
+fn looks_like_jwt(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("eyJ") && s.bytes().filter(|b| *b == b'.').count() >= 2
+}
+
+fn csrf_from_cookies(cookies: &[CookieRec]) -> Option<String> {
+    cookies.iter().find_map(|c| {
+        let n = c.name.to_ascii_lowercase();
+        if n.contains("csrf") || n.contains("xsrf") {
+            Some(c.value.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn csrf_from_storage(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join("storage.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    for bag in ["local", "session"] {
+        let Some(obj) = v.get(bag).and_then(|x| x.as_object()) else {
+            continue;
+        };
+        for (k, val) in obj {
+            let n = k.to_ascii_lowercase();
+            if n.contains("csrf") || n.contains("xsrf") {
+                if let Some(s) = val.as_str() {
+                    if !s.is_empty() {
+                        return Some(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(super) fn print_identity(opts: &HttpOpts<'_>, url: Option<&str>) -> anyhow::Result<()> {
+    let dummy = url.unwrap_or("https://localhost/");
+    let ident = load_identity(opts, dummy)?;
+    let dir = browse::session_dir(opts.session);
+    if opts.json_body {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "dir": dir.display().to_string(),
+                "cookies": ident.cookies.len(),
+                "headers": ident.headers.iter().map(|(k,v)| serde_json::json!({"name": k, "value": mask_secret(v)})).collect::<Vec<_>>(),
+                "jar": ident.jar.as_ref().map(|p| p.display().to_string()),
+                "notes": ident.notes,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("session {}", dir.display());
+    println!("cookies {}", ident.cookies.len());
+    let mut domains: BTreeMap<String, usize> = BTreeMap::new();
+    for c in &ident.cookies {
+        *domains.entry(c.domain.clone()).or_insert(0) += 1;
+    }
+    for (d, n) in domains {
+        println!("  {n}\t{d}");
+    }
+    for (k, v) in &ident.headers {
+        println!("{k}: {}", mask_secret(v));
+    }
+    if ident.cookies.is_empty() && ident.headers.is_empty() {
+        println!("(空。先 rxt http import --browser firefox  或  open 登录页)");
+    }
+    Ok(())
+}
+
+fn mask_secret(s: &str) -> String {
+    let s = s.trim();
+    if s.len() <= 12 {
+        return "***".into();
+    }
+    format!("{}…{}", &s[..8], s.len())
 }
 
 fn parse_set_cookie(header: &str, host: &str) -> Option<CookieRec> {
@@ -2392,6 +3037,9 @@ mod tests {
             form: &[],
             no_probe: true,
             cookie_json: None,
+            select: None,
+            session: None,
+            engine: None,
         }
     }
 
@@ -2638,6 +3286,101 @@ mod tests {
     }
 
     #[test]
+    fn tabbit_roots_named() {
+        let s = format!("{:?}", tabbit_roots()).to_ascii_lowercase();
+        assert!(s.contains("tabbit"), "{s}");
+    }
+
+    #[test]
+    fn chromium_pairs_missing_dir() {
+        assert!(chromium_cookie_pairs(Path::new("/no/such/tabbit")).is_empty());
+    }
+
+    #[test]
+    fn identity_sends_session_cookie_and_bearer() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let got2 = got.clone();
+        let _t = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                *got2.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let body = b"ok";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    std::str::from_utf8(body).unwrap()
+                );
+                let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("rxt-ident-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        persist_login(
+            &dir,
+            &[CookieRec {
+                domain: "127.0.0.1".into(),
+                path: "/".into(),
+                secure: false,
+                http_only: false,
+                expires: None,
+                name: "sid".into(),
+                value: "abc".into(),
+            }],
+            "test",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("storage.json"),
+            r#"{"local":{"access_token":"tok_sso_12345678"},"session":{}}"#,
+        )
+        .unwrap();
+        std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
+        std::env::set_var("RXT_HTTP_ENGINE", "static");
+        let url = format!("http://{addr}/api");
+        let urls = vec![url];
+        let opts = HttpOpts {
+            engine: Some("static"),
+            ..test_opts(&urls)
+        };
+        let _ = run(opts);
+        let req = got.lock().unwrap().clone();
+        assert!(req.contains("sid=abc"), "{req}");
+        assert!(req.to_ascii_lowercase().contains("authorization: bearer tok_sso_12345678"), "{req}");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("RXT_HTTP_SESSION_DIR");
+        std::env::remove_var("RXT_HTTP_ENGINE");
+    }
+
+    #[test]
+    fn persist_login_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("rxt-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let recs = vec![CookieRec {
+            domain: ".ex.com".into(),
+            path: "/".into(),
+            secure: true,
+            http_only: true,
+            expires: Some(2000000000),
+            name: "sid".into(),
+            value: "abc".into(),
+        }];
+        persist_login(&dir, &recs, "firefox").unwrap();
+        let loaded = load_netscape(&dir.join("cookies.txt")).unwrap();
+        assert_eq!(loaded[0].name, "sid");
+        let js = std::fs::read_to_string(dir.join("cookies.json")).unwrap();
+        assert!(js.contains("abc"));
+        let login = std::fs::read_to_string(dir.join("login.json")).unwrap();
+        assert!(login.contains("firefox"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cookie_json_devtools() {
         let recs = parse_cookie_json(
             r#"[{"name":"loginToken","value":"abc","domain":".meituan.com","path":"/","secure":true,"httpOnly":true}]"#,
@@ -2702,5 +3445,173 @@ mod tests {
     fn session_expired_on_html() {
         let v = session_verdict(1, 200, "text/html", &[], "<html><div id=app></div></html>");
         assert!(matches!(v, SessionVerdict::Expired(_)));
+    }
+
+    #[test]
+    fn extract_select_h1_and_table() {
+        let html = r#"<html><h1>Hello</h1><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table></html>"#;
+        assert_eq!(browse::extract_select(html, "h1"), vec!["Hello".to_string()]);
+        let t = browse::extract_select(html, "table");
+        assert!(!t.is_empty(), "{t:?}");
+        assert!(t[0].contains("\"a\""), "{}", t[0]);
+        assert!(t[0].contains("1"), "{}", t[0]);
+    }
+
+    #[test]
+    fn page_session_open_fill_click() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _t = std::thread::spawn(move || {
+            for _ in 0..2 {
+                if let Ok((mut s, _)) = listener.accept() {
+                    use std::io::Read;
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 1024];
+                    loop {
+                        let n = s.read(&mut tmp).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&buf[..pos]);
+                            let cl = headers
+                                .lines()
+                                .find_map(|l| {
+                                    l.split_once(':').and_then(|(k, v)| {
+                                        if k.eq_ignore_ascii_case("content-length") {
+                                            v.trim().parse::<usize>().ok()
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .unwrap_or(0);
+                            let start = pos + 4;
+                            while buf.len() < start + cl {
+                                let n = s.read(&mut tmp).unwrap_or(0);
+                                if n == 0 {
+                                    break;
+                                }
+                                buf.extend_from_slice(&tmp[..n]);
+                            }
+                            break;
+                        }
+                        if buf.len() > 65536 {
+                            break;
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&buf);
+                    let body = if req.starts_with("POST") {
+                        let q = req.split("\r\n\r\n").nth(1).unwrap_or("");
+                        format!("<html><title>ok</title><p>got {q}</p></html>")
+                    } else {
+                        r#"<html><title>search</title>
+                        <form action="/go" method="post" name="s">
+                          <input type="text" name="q">
+                          <button type="submit">go</button>
+                        </form>
+                        <a href="/about">about</a>
+                        </html>"#
+                            .into()
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut s, resp.as_bytes());
+                }
+            }
+        });
+        let url = format!("http://{addr}/");
+        let dir = std::env::temp_dir().join(format!("rxt-http-sess-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
+        std::env::set_var("RXT_HTTP_ENGINE", "static");
+        let urls = vec![url.clone()];
+        let opts = HttpOpts {
+            engine: Some("static"),
+            ..test_opts(&urls)
+        };
+        browse::run(&opts, "OPEN", &urls).unwrap();
+        std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
+        let snap = std::fs::read_to_string(dir.join("refs.json")).unwrap();
+        assert!(snap.contains("textbox"), "{snap}");
+        assert!(snap.contains("button"), "{snap}");
+        browse::run(&opts, "FILL", &["@e1".into(), "hello".into()]).unwrap();
+        browse::run(&opts, "CLICK", &["@e2".into()]).unwrap();
+        let html = std::fs::read_to_string(dir.join("page.html")).unwrap();
+        assert!(html.contains("got q=hello") || html.contains("q=hello"), "{html}");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("RXT_HTTP_ENGINE");
+        std::env::remove_var("RXT_HTTP_SESSION_DIR");
+    }
+
+    #[test]
+    #[ignore = "hold 跨用例会抢 Lightpanda 页；用 rxt http 实跑验证"]
+    fn js_engine_hydrate_click_net() {
+        if !cdp::available() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _srv = std::thread::spawn(move || {
+            for _ in 0..8 {
+                if let Ok((mut s, _)) = listener.accept() {
+                    use std::io::{Read, Write};
+                    let mut buf = [0u8; 2048];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let (ctype, body): (&str, String) = if req.contains(" /api") {
+                        ("application/json", r#"{"secret":"from-js"}"#.into())
+                    } else {
+                        (
+                            "text/html",
+                            r#"<html><title>jsapp</title><body>
+<div id="app">loading</div>
+<button id="go">clickme</button>
+<script>
+document.getElementById('app').innerText='hydrated';
+document.getElementById('go').addEventListener('click',()=>{document.getElementById('app').innerText='clicked';});
+fetch('/api').then(r=>r.json()).then(j=>{window.__api=j;document.getElementById('app').innerText='hydrated '+j.secret;});
+</script></body></html>"#
+                                .into(),
+                        )
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                }
+            }
+        });
+        let url = format!("http://{addr}/");
+        let dir = std::env::temp_dir().join(format!("rxt-http-js-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RXT_HTTP_SESSION_DIR", &dir);
+        std::env::set_var("RXT_HTTP_ENGINE", "js");
+        let urls = vec![url];
+        let opts = HttpOpts {
+            engine: Some("js"),
+            ..test_opts(&urls)
+        };
+        browse::run(&opts, "OPEN", &urls).unwrap();
+        let html = std::fs::read_to_string(dir.join("page.html")).unwrap();
+        assert!(
+            html.contains("hydrated from-js") || html.contains("hydrated"),
+            "{html}"
+        );
+        let net = std::fs::read_to_string(dir.join("net.json")).unwrap_or_default();
+        assert!(net.contains("from-js") || net.contains("/api"), "{net}");
+        browse::run(&opts, "CLICK", &["@e1".into()]).unwrap();
+        let html2 = std::fs::read_to_string(dir.join("page.html")).unwrap();
+        assert!(html2.contains("clicked"), "{html2}");
+        let _ = cdp::hold_quit(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("RXT_HTTP_ENGINE");
+        std::env::remove_var("RXT_HTTP_SESSION_DIR");
     }
 }
