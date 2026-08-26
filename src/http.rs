@@ -1626,11 +1626,14 @@ fn is_session_filename(name: &str) -> bool {
     name == SENTINEL_NAME || AUTH_FILES.contains(&name) || SESSION_JUNK.contains(&name)
 }
 
-fn default_session_root() -> PathBuf {
+fn default_rxt_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".rxt")
-        .join("http-session")
+}
+
+fn default_session_root() -> PathBuf {
+    default_rxt_dir().join("http-session")
 }
 
 fn path_has_parent_dir(p: &Path) -> bool {
@@ -1655,6 +1658,30 @@ fn session_path_is_link(p: &Path) -> bool {
     false
 }
 
+fn is_fs_root(p: &Path) -> bool {
+    match p.parent() {
+        None => true,
+        Some(parent) => parent == p,
+    }
+}
+
+/// 会话目录或其任一祖先为 symlink/junction 则返回该路径。
+fn session_chain_link(dir: &Path) -> Option<PathBuf> {
+    let mut cur = dir.to_path_buf();
+    loop {
+        if session_path_is_link(&cur) {
+            return Some(cur);
+        }
+        match cur.parent() {
+            Some(parent) if !is_fs_root(parent) && parent != cur.as_path() => {
+                cur = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    None
+}
+
 fn validate_session_path(dir: &Path) -> anyhow::Result<()> {
     if dir.as_os_str().is_empty() {
         anyhow::bail!("会话路径为空");
@@ -1662,8 +1689,12 @@ fn validate_session_path(dir: &Path) -> anyhow::Result<()> {
     if path_has_parent_dir(dir) {
         anyhow::bail!("会话路径不能包含 ..：{}", dir.display());
     }
-    if session_path_is_link(dir) {
-        anyhow::bail!("拒绝符号链接/junction 会话目录：{}", dir.display());
+    if let Some(link) = session_chain_link(dir) {
+        anyhow::bail!(
+            "拒绝符号链接/junction 会话路径（{} 是链接）：{}",
+            link.display(),
+            dir.display()
+        );
     }
     Ok(())
 }
@@ -1676,14 +1707,19 @@ fn is_under_default_session_root(dir: &Path) -> bool {
     if path_has_parent_dir(dir) {
         return false;
     }
+    let rxt = default_rxt_dir();
     let root = default_session_root();
-    if path_has_parent_dir(&root) {
+    if path_has_parent_dir(&rxt) || path_has_parent_dir(&root) {
         return false;
     }
-    match (std::fs::canonicalize(&root), std::fs::canonicalize(dir)) {
-        (Ok(root), Ok(dir)) => paths_under(&dir, &root),
-        _ => paths_under(dir, &root),
+    let rxt_c = std::fs::canonicalize(&rxt).unwrap_or_else(|_| rxt.clone());
+    let root_c = std::fs::canonicalize(&root).unwrap_or(root);
+    // 会话根解析后仍须在 ~/.rxt 下，防止 http-session 本身被链到项目
+    if !paths_under(&root_c, &rxt_c) {
+        return false;
     }
+    let dir_c = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    paths_under(&dir_c, &root_c)
 }
 
 fn sentinel_path(dir: &Path) -> PathBuf {
@@ -3985,6 +4021,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn session_dir_rejects_ancestor_symlink() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-sess-alink-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("real-proj");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("Cargo.toml"), b"[package]\nname=\"x\"\n").unwrap();
+        std::fs::write(real.join("page.html"), b"<html>keep</html>").unwrap();
+        let link = tmp.join("sess-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let nested = link.join("sess");
+        let err = secure_mkdir(&nested).unwrap_err().to_string();
+        assert!(
+            err.contains("符号链接") || err.contains("junction") || err.contains("链接"),
+            "{err}"
+        );
+        assert!(!real.join("sess").exists());
+        assert!(!real.join(SENTINEL_NAME).exists());
+        assert!(!real.join("sess").join(SENTINEL_NAME).exists());
+        assert_eq!(
+            std::fs::read_to_string(real.join("page.html")).unwrap(),
+            "<html>keep</html>"
+        );
+        let purge_err = purge_session(&nested).unwrap_err().to_string();
+        assert!(
+            purge_err.contains("符号链接")
+                || purge_err.contains("junction")
+                || purge_err.contains("链接"),
+            "{purge_err}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_dir_rejects_ancestor_symlink_empty_target() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-sess-aempty-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("empty-proj");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.join("empty-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let nested = link.join("sess");
+        assert!(secure_mkdir(&nested).is_err());
+        assert!(!real.join("sess").exists());
+        assert!(!real.join(SENTINEL_NAME).exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[cfg(windows)]
     #[test]
     fn session_dir_rejects_junction() {
@@ -4007,6 +4101,34 @@ mod tests {
             err.contains("符号链接") || err.contains("junction") || err.contains("链接"),
             "{err}"
         );
+        assert!(!real.join(SENTINEL_NAME).exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn session_dir_rejects_ancestor_junction() {
+        let tmp = std::env::temp_dir().join(format!(
+            "rxt-sess-ajunc-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let real = tmp.join("real-proj");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("Cargo.toml"), b"[package]\nname=\"x\"\n").unwrap();
+        let link = tmp.join("sess-link");
+        if std::os::windows::fs::symlink_dir(&real, &link).is_err() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+        let nested = link.join("sess");
+        let err = secure_mkdir(&nested).unwrap_err().to_string();
+        assert!(
+            err.contains("符号链接") || err.contains("junction") || err.contains("链接"),
+            "{err}"
+        );
+        assert!(!real.join("sess").exists());
         assert!(!real.join(SENTINEL_NAME).exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
