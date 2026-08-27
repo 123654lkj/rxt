@@ -256,7 +256,10 @@ rxt http snap                                     # 可交互元素
 rxt http read / rxt http read @e1                 # 正文 / 元素
 rxt http fill @e2 hello && rxt http click @e3     # 填 + 点（JS 事件也生效）
 rxt http eval 'document.title'                    # 跑 JS
-rxt http net                                      # 拦截到的 fetch/XHR（含 JSON 正文）
+rxt http net                                      # fetch/XHR + CDP 全量 HTTP（比页面 hook 更全）
+rxt http tabs                                     # 列出页面 target
+rxt http attach <targetId>                        # 挂到已有标签（含已登录页）
+rxt http live                                     # 探测本机已开远程调试的 Edge/Chrome
 rxt http storage                                  # localStorage / sessionStorage
 rxt http wait '#app'                              # 等选择器或 JS 表达式
 rxt http close                                    # 关掉引擎（带 hold secret，清元数据/子进程）

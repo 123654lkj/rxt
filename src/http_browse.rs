@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 const PAGE_CMDS: &[&str] = &[
     "OPEN", "GO", "NAV", "SNAP", "SNAPSHOT", "CLICK", "FILL", "READ", "SHOW", "ATTR", "SUBMIT",
     "EVAL", "JS", "NET", "WAIT", "CLOSE", "PURGE", "CLEAN", "STORAGE", "HOLD", "IMPORT", "AUTH",
-    "SSO", "IDENT",
+    "SSO", "IDENT", "TABS", "ATTACH", "LIVE",
 ];
 
 pub(super) fn is_page_cmd(method: &str) -> bool {
@@ -59,6 +59,16 @@ pub(super) fn run(opts: &HttpOpts<'_>, method: &str, args: &[String]) -> anyhow:
     }
     if method == "CLOSE" {
         return super::cdp::close_js();
+    }
+    if method == "LIVE" {
+        match super::cdp::discover_live_cdp() {
+            Some(p) => println!("live CDP 127.0.0.1:{p}"),
+            None => {
+                println!("没有已开启远程调试的 Edge/Chrome。");
+                println!("可先启动: msedge --remote-debugging-port=9222 --remote-allow-origins=*");
+            }
+        }
+        return Ok(());
     }
     super::secure_mkdir(&dir)?;
     let jar_owned = dir.join("cookies.txt");
@@ -281,6 +291,31 @@ fn run_js(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
+        }
+        "TABS" => {
+            let v = cdp::eval_tabs(dir)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        "ATTACH" => {
+            let id = args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("rxt http attach <targetId>"))?;
+            cdp::attach_tab(dir, id)?;
+            println!("OK attach {id}");
+            Ok(())
+        }
+        "LIVE" => {
+            match super::cdp::discover_live_cdp() {
+                Some(p) => println!("live CDP 127.0.0.1:{p}"),
+                None => {
+                    println!("没有已开启远程调试的 Edge/Chrome。");
+                    println!(
+                        "可先启动: msedge --remote-debugging-port=9222 --remote-allow-origins=*"
+                    );
+                }
+            }
+            Ok(())
         }
         "IMPORT" => import_cmd(opts, dir, args),
         "AUTH" | "IDENT" => super::print_identity(opts, args.first().map(|s| s.as_str())),

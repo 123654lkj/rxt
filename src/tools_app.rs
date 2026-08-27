@@ -341,7 +341,7 @@ pub enum Command {
     Http {
         #[arg(
             default_value = "GET",
-            help = "GET|POST|…|open|snap|read|fill|click|eval|net|wait|storage|import|auth|sso|close|purge|cookies|forms|cli|scan|session"
+            help = "GET|POST|…|open|snap|read|fill|click|eval|net|wait|storage|import|auth|sso|tabs|attach|live|close|purge|cookies|forms|cli|scan|session"
         )]
         method: String,
         #[arg(

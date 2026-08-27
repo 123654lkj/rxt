@@ -184,6 +184,15 @@ fn chromium_candidates() -> Vec<PathBuf> {
         for pf in pfs.into_iter().flatten() {
             v.push(pf.join(r"Microsoft\Edge\Application\msedge.exe"));
             v.push(pf.join(r"Google\Chrome\Application\chrome.exe"));
+            let wv = pf.join(r"Microsoft\EdgeWebView\Application");
+            if let Ok(rd) = std::fs::read_dir(&wv) {
+                for e in rd.flatten() {
+                    let p = e.path().join("msedgewebview2.exe");
+                    if p.is_file() {
+                        v.push(p);
+                    }
+                }
+            }
         }
         if let Some(local) = local {
             v.push(local.join(r"Microsoft\Edge\Application\msedge.exe"));
@@ -381,6 +390,45 @@ fn write_serve_meta(
     Ok(())
 }
 
+fn merge_net_capture(hook: &Value, mut cdp_net: Vec<Value>) -> Value {
+    let mut all = Vec::new();
+    if let Some(arr) = hook.as_array() {
+        all.extend(arr.iter().cloned());
+    } else if !hook.is_null() {
+        all.push(hook.clone());
+    }
+    all.append(&mut cdp_net);
+    Value::Array(all)
+}
+
+fn profile_locked(user_data: &Path) -> bool {
+    ["SingletonLock", "lockfile", "SingletonSocket"]
+        .iter()
+        .any(|n| user_data.join(n).exists())
+}
+
+fn read_devtools_active_port(dir: &Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(dir.join("DevToolsActivePort")).ok()?;
+    let port: u16 = raw.lines().next()?.trim().parse().ok()?;
+    serve_alive(port, 0).then_some(port)
+}
+
+pub(super) fn discover_live_cdp() -> Option<u16> {
+    for name in ["edge", "chrome", "brave", "chromium"] {
+        if let Some(ud) = super::cookies_native::chromium_user_data(name) {
+            if let Some(p) = read_devtools_active_port(&ud) {
+                return Some(p);
+            }
+        }
+    }
+    for port in 9222u16..=9233 {
+        if serve_alive(port, 0) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 fn wait_cdp(port: u16, pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -541,13 +589,32 @@ pub(super) fn load_cookies_from_user_data(
     if cfg!(test) {
         anyhow::bail!("unit test 不启动本机浏览器读 Cookie");
     }
+    if let Some(port) = discover_live_cdp() {
+        if let Ok(mut c) = Cdp::connect(port) {
+            if let Ok(mut recs) = c.fetch_all_cookies() {
+                if recs.iter().any(|x| !x.value.is_empty()) {
+                    eprintln!("# cookies from live CDP :{port}");
+                    if let Some(ds) = domains {
+                        recs.retain(|c| ds.iter().any(|d| super::domain_matches(&c.domain, d)));
+                    }
+                    if !recs.is_empty() {
+                        return Ok(recs);
+                    }
+                }
+            }
+        }
+    }
     let bin = find_chromium_bin().ok_or_else(|| {
         anyhow::anyhow!("没有本机 Edge/Chrome。Windows 自带 Edge 即可，无需 Lightpanda/Python")
     })?;
     if !user_data.is_dir() {
         anyhow::bail!("没有 User Data: {}", user_data.display());
     }
-    let tmp = copy_cookie_skeleton(user_data)?;
+    let (tmp, spawned_real) = if !profile_locked(user_data) {
+        (user_data.to_path_buf(), true)
+    } else {
+        (copy_cookie_skeleton(user_data)?, false)
+    };
     let log = rxt_dir().join("http-cookie-cdp.log");
     let logf = std::fs::File::create(&log)?;
     let mut names = vec!["Default".to_string()];
@@ -579,14 +646,20 @@ pub(super) fn load_cookies_from_user_data(
         let Some(mut child) = child_ok else {
             continue;
         };
-        match Cdp::connect(port).and_then(|mut c| c.fetch_all_cookies()) {
+        match Cdp::connect(port).and_then(|mut c| {
+            let recs = c.fetch_all_cookies()?;
+            let _ = c.call("Browser.close", json!({}), None);
+            Ok(recs)
+        }) {
             Ok(mut recs) => all.append(&mut recs),
             Err(e) => eprintln!("# CDP cookie {prof}: {e}"),
         }
         let _ = child.kill();
         let _ = child.wait();
     }
-    let _ = std::fs::remove_dir_all(&tmp);
+    if !spawned_real {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     if let Some(ds) = domains {
         all.retain(|c| ds.iter().any(|d| super::domain_matches(&c.domain, d)));
     }
@@ -627,6 +700,7 @@ fn cdp_ws_path(port: u16) -> String {
 pub(super) struct Cdp {
     ws: WebSocket<TcpStream>,
     next_id: u64,
+    net_events: Vec<Value>,
 }
 
 impl Cdp {
@@ -649,7 +723,11 @@ impl Cdp {
             .map_err(|e| anyhow::anyhow!("CDP handshake: {e}"))?;
         let (ws, _) = tungstenite::client::client(req, stream)
             .map_err(|e| anyhow::anyhow!("CDP websocket: {e}"))?;
-        Ok(Self { ws, next_id: 0 })
+        Ok(Self {
+            ws,
+            next_id: 0,
+            net_events: Vec::new(),
+        })
     }
 
     fn fetch_all_cookies(&mut self) -> anyhow::Result<Vec<CookieRec>> {
@@ -687,6 +765,11 @@ impl Cdp {
                 continue;
             };
             let v: Value = serde_json::from_str(&t)?;
+            if let Some(m) = v.get("method").and_then(|x| x.as_str()) {
+                if m.starts_with("Network.") && self.net_events.len() < 400 {
+                    self.net_events.push(v.clone());
+                }
+            }
             if v.get("id").and_then(|x| x.as_u64()) == Some(id) {
                 if let Some(err) = v.get("error") {
                     anyhow::bail!(
@@ -741,6 +824,63 @@ impl Cdp {
         let _ = self.call("Runtime.enable", json!({}), Some(sid));
         let _ = self.call("Network.enable", json!({}), Some(sid));
         Ok(())
+    }
+
+    fn harvest_cdp_net(&mut self, sid: &str) -> Vec<Value> {
+        use base64::Engine as _;
+        let evs = std::mem::take(&mut self.net_events);
+        let mut out = Vec::new();
+        for e in evs {
+            if e.get("method").and_then(|m| m.as_str()) != Some("Network.responseReceived") {
+                continue;
+            }
+            if out.len() >= 40 {
+                break;
+            }
+            let Some(p) = e.get("params") else {
+                continue;
+            };
+            let Some(rid) = p.get("requestId").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let resp = p.get("response").cloned().unwrap_or(Value::Null);
+            let url = resp.get("url").and_then(|x| x.as_str()).unwrap_or("");
+            let status = resp.get("status").and_then(|x| x.as_u64()).unwrap_or(0);
+            let mime = resp.get("mimeType").and_then(|x| x.as_str()).unwrap_or("");
+            let interesting = mime.contains("json")
+                || mime.contains("text")
+                || mime.contains("javascript")
+                || mime.contains("xml")
+                || mime.contains("html");
+            let mut body = String::new();
+            if interesting {
+                if let Ok(b) = self.call(
+                    "Network.getResponseBody",
+                    json!({"requestId": rid}),
+                    Some(sid),
+                ) {
+                    let raw = b.get("body").and_then(|x| x.as_str()).unwrap_or("");
+                    if b.get("base64Encoded").and_then(|x| x.as_bool()) == Some(true) {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
+                            body = String::from_utf8_lossy(&bytes)
+                                .chars()
+                                .take(16000)
+                                .collect();
+                        }
+                    } else {
+                        body = raw.chars().take(16000).collect();
+                    }
+                }
+            }
+            out.push(json!({
+                "kind": "cdp",
+                "url": url,
+                "status": status,
+                "type": mime,
+                "body": body
+            }));
+        }
+        out
     }
 
     pub(super) fn eval(&mut self, sid: &str, expr: &str) -> anyhow::Result<Value> {
@@ -1126,7 +1266,7 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
     use std::io::{BufRead, Write};
     let (cport, cpid) = ensure_server()?;
     let mut cdp = Cdp::connect(cport)?;
-    let (tid, sid) = cdp.attach_or_create(None, "about:blank")?;
+    let (mut tid, mut sid) = cdp.attach_or_create(None, "about:blank")?;
     cdp.enable(&sid)?;
     let _ = cdp.call(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -1208,6 +1348,31 @@ pub(super) fn hold_loop(dir: &Path) -> anyhow::Result<()> {
                 };
                 match dump_session(&mut cdp, &sid, dir, &jar, cpid, cport, &tid) {
                     Ok(()) => json!({"ok": true}),
+                    Err(e) => json!({"ok": false, "error": e.to_string()}),
+                }
+            }
+            "tabs" => match cdp.call("Target.getTargets", json!({}), None) {
+                Ok(v) => json!({"ok": true, "value": v}),
+                Err(e) => json!({"ok": false, "error": e.to_string()}),
+            },
+            "attach" => {
+                let id = req.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                match cdp.attach_or_create(Some(id), "about:blank") {
+                    Ok((t, s)) => {
+                        tid = t;
+                        sid = s;
+                        let _ = cdp.enable(&sid);
+                        let _ = std::fs::write(
+                            dir.join("engine.json"),
+                            serde_json::to_vec_pretty(&EngineState {
+                                port: cport,
+                                pid: cpid,
+                                target_id: tid.clone(),
+                            })
+                            .unwrap_or_default(),
+                        );
+                        json!({"ok": true, "id": tid})
+                    }
                     Err(e) => json!({"ok": false, "error": e.to_string()}),
                 }
             }
@@ -1405,6 +1570,16 @@ pub(super) fn refresh(_opts: &HttpOpts<'_>, dir: &Path, jar: &Path) -> anyhow::R
     Ok(())
 }
 
+pub(super) fn eval_tabs(dir: &Path) -> anyhow::Result<Value> {
+    let v = hold_rpc(dir, json!({"op": "tabs"}))?;
+    Ok(v.get("value").cloned().unwrap_or(Value::Null))
+}
+
+pub(super) fn attach_tab(dir: &Path, id: &str) -> anyhow::Result<()> {
+    hold_rpc(dir, json!({"op": "attach", "id": id}))?;
+    Ok(())
+}
+
 pub(super) fn eval_js(dir: &Path, expr: &str) -> anyhow::Result<Value> {
     let v = hold_rpc(dir, json!({"op": "eval", "expr": expr}))?;
     Ok(v.get("value").cloned().unwrap_or(Value::Null))
@@ -1488,7 +1663,9 @@ fn dump_session(
     let url = cdp.eval_str(sid, "location.href")?;
     let title = cdp.eval_str(sid, "document.title")?;
     let refs = cdp.eval(sid, SNAP_JS)?;
-    let net = cdp.eval(sid, "window.__rxt_net||[]")?;
+    let hook = cdp.eval(sid, "window.__rxt_net||[]")?;
+    let cdp_net = cdp.harvest_cdp_net(sid);
+    let net = merge_net_capture(&hook, cdp_net);
     let storage = cdp.eval(
         sid,
         r#"(() => { const o=(s)=>{const x={}; try{for(let i=0;i<s.length;i++){const k=s.key(i); x[k]=s.getItem(k);} }catch(e){} return x;}; return {local:o(localStorage), session:o(sessionStorage)}; })()"#,
@@ -1656,6 +1833,29 @@ mod tests {
             "/devtools/browser/abc"
         );
         assert_eq!(ws_path_from_debugger_url("ws://127.0.0.1:9222/"), "/");
+    }
+
+    #[test]
+    fn read_devtools_active_port_parse() {
+        let dir = std::env::temp_dir().join(format!("rxt-dtport-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(
+            dir.join("DevToolsActivePort"),
+            "9222\n/devtools/browser/x\n",
+        )
+        .unwrap();
+        // 没有真实 CDP，serve_alive 失败 → None
+        assert!(read_devtools_active_port(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_net_combines_hook_and_cdp() {
+        let hook = json!([{"kind":"fetch","url":"/a"}]);
+        let cdp = vec![json!({"kind":"cdp","url":"/b"})];
+        let m = merge_net_capture(&hook, cdp);
+        let arr = m.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
     }
 
     #[test]
