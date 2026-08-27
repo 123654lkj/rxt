@@ -177,6 +177,7 @@ fn chromium_candidates() -> Vec<PathBuf> {
         let pfs = [
             std::env::var_os("PROGRAMFILES").map(PathBuf::from),
             std::env::var_os("PROGRAMFILES(X86)").map(PathBuf::from),
+            std::env::var_os("ProgramW6432").map(PathBuf::from),
             Some(PathBuf::from(r"C:\Program Files")),
             Some(PathBuf::from(r"C:\Program Files (x86)")),
         ];
@@ -325,35 +326,78 @@ pub(super) fn ensure_server() -> anyhow::Result<(u16, u32)> {
     std::fs::create_dir_all(rxt_dir())?;
     let log = rxt_dir().join("http-engine.log");
     let logf = std::fs::File::create(&log)?;
-    let mut child = if kind == "lightpanda" {
-        spawn_lightpanda(&bin, port, want_heap, &logf)?
-    } else {
-        spawn_chromium(&bin, port, want_heap, &logf)?
-    };
-    let pid = child.id();
-    #[cfg(windows)]
-    {
-        attach_kill_job(pid);
+    if kind == "lightpanda" {
+        let mut child = spawn_lightpanda(&bin, port, want_heap, &logf)?;
+        let pid = child.id();
+        if wait_cdp(port, pid, Duration::from_secs(12)) {
+            adopt_engine_child(child);
+            write_serve_meta(&meta_p, port, pid, want_heap, kind)?;
+            return Ok((port, pid));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        anyhow::bail!("JS 引擎未在 :{port} 起来。日志 {}", log.display())
     }
-    let deadline = Instant::now() + Duration::from_secs(12);
+    let profile = rxt_dir().join("http-cdp-profile");
+    std::fs::create_dir_all(&profile)?;
+    for extra in chromium_flag_sets() {
+        let port = free_port()?;
+        let mut child =
+            match spawn_chromium_once(&bin, port, want_heap, &logf, &profile, extra, None) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+        let pid = child.id();
+        #[cfg(windows)]
+        {
+            attach_kill_job(pid);
+        }
+        if wait_cdp(port, pid, Duration::from_secs(20)) {
+            adopt_engine_child(child);
+            write_serve_meta(&meta_p, port, pid, want_heap, kind)?;
+            return Ok((port, pid));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    anyhow::bail!("本机 Edge/Chrome 未能拉起 CDP。日志 {}", log.display())
+}
+
+fn write_serve_meta(
+    meta_p: &Path,
+    port: u16,
+    pid: u32,
+    heap: u32,
+    kind: &str,
+) -> anyhow::Result<()> {
+    let m = ServeMeta {
+        port,
+        pid,
+        heap_mb: heap,
+        kind: kind.into(),
+    };
+    std::fs::write(meta_p, serde_json::to_vec_pretty(&m)?)?;
+    eprintln!("# js engine {kind} pid={pid} port={port} heap={heap}MB");
+    Ok(())
+}
+
+fn wait_cdp(port: u16, pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if serve_alive(port, pid) {
-            adopt_engine_child(child);
-            let m = ServeMeta {
-                port,
-                pid,
-                heap_mb: want_heap,
-                kind: kind.into(),
-            };
-            std::fs::write(&meta_p, serde_json::to_vec_pretty(&m)?)?;
-            eprintln!("# js engine {kind} pid={pid} port={port} heap={want_heap}MB");
-            return Ok((port, pid));
+            return true;
         }
         std::thread::sleep(Duration::from_millis(80));
     }
-    let _ = child.kill();
-    let _ = child.wait();
-    anyhow::bail!("JS 引擎未在 :{port} 起来。日志 {}", log.display())
+    false
+}
+
+fn chromium_flag_sets() -> [&'static [&'static str]; 3] {
+    [
+        &["--headless=new", "--remote-allow-origins=*"],
+        &["--headless", "--remote-allow-origins=*"],
+        &["--headless"],
+    ]
 }
 
 fn spawn_lightpanda(
@@ -387,34 +431,41 @@ fn spawn_lightpanda(
         .map_err(|e| anyhow::anyhow!("启动 lightpanda 失败: {e}"))
 }
 
-fn spawn_chromium(bin: &Path, port: u16, heap: u32, logf: &std::fs::File) -> anyhow::Result<Child> {
-    let profile = rxt_dir().join("http-cdp-profile");
-    std::fs::create_dir_all(&profile)?;
+fn spawn_chromium_once(
+    bin: &Path,
+    port: u16,
+    heap: u32,
+    logf: &std::fs::File,
+    profile: &Path,
+    extra: &[&str],
+    profile_dir: Option<&str>,
+) -> anyhow::Result<Child> {
     let port = port.to_string();
     let heap_flag = format!("--js-flags=--max-old-space-size={heap}");
     let user_data = format!("--user-data-dir={}", profile.display());
     let dbg = format!("--remote-debugging-port={port}");
+    let mut args: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
+    args.extend([
+        "--disable-gpu".into(),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        "--disable-extensions".into(),
+        "--mute-audio".into(),
+        "--hide-scrollbars".into(),
+        "--remote-debugging-address=127.0.0.1".into(),
+        dbg,
+        user_data,
+        heap_flag,
+    ]);
+    if let Some(p) = profile_dir {
+        args.push(format!("--profile-directory={p}"));
+    }
+    args.push("about:blank".into());
     let mut cmd = Command::new(bin);
-    cmd.args([
-        "--headless=new",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--mute-audio",
-        "--hide-scrollbars",
-        "--remote-debugging-address=127.0.0.1",
-        "--remote-allow-origins=*",
-        &dbg,
-        &user_data,
-        &heap_flag,
-        "about:blank",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::from(logf.try_clone()?))
-    .stderr(Stdio::from(logf.try_clone()?));
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(logf.try_clone()?))
+        .stderr(Stdio::from(logf.try_clone()?));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -422,6 +473,127 @@ fn spawn_chromium(bin: &Path, port: u16, heap: u32, logf: &std::fs::File) -> any
     }
     cmd.spawn()
         .map_err(|e| anyhow::anyhow!("启动 {} 失败: {e}", bin.display()))
+}
+
+fn cookie_from_cdp(c: &Value) -> Option<CookieRec> {
+    Some(CookieRec {
+        domain: c.get("domain")?.as_str()?.to_string(),
+        path: c
+            .get("path")
+            .and_then(|x| x.as_str())
+            .unwrap_or("/")
+            .to_string(),
+        secure: c.get("secure").and_then(|x| x.as_bool()).unwrap_or(false),
+        http_only: c.get("httpOnly").and_then(|x| x.as_bool()).unwrap_or(false),
+        expires: c
+            .get("expires")
+            .and_then(|x| x.as_f64())
+            .and_then(|f| (f > 0.0).then_some(f as u64)),
+        name: c.get("name")?.as_str()?.to_string(),
+        value: c
+            .get("value")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+fn copy_cookie_skeleton(user_data: &Path) -> anyhow::Result<PathBuf> {
+    let dst = std::env::temp_dir().join(format!(
+        "rxt-ck-prof-{}-{}",
+        std::process::id(),
+        super::now_unix()
+    ));
+    std::fs::create_dir_all(&dst)?;
+    let ls = user_data.join("Local State");
+    if ls.is_file() {
+        let _ = std::fs::copy(&ls, dst.join("Local State"));
+    }
+    let _ = std::fs::write(dst.join("First Run"), b"");
+    for (_ls, db) in super::chromium_cookie_pairs(user_data) {
+        let Ok(rel) = db.strip_prefix(user_data) else {
+            continue;
+        };
+        let dest = dst.join(rel);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(&db, &dest);
+        for suf in ["-wal", "-shm", "-journal"] {
+            let mut s = db.as_os_str().to_os_string();
+            s.push(suf);
+            let src = PathBuf::from(s);
+            if src.is_file() {
+                let mut d = dest.as_os_str().to_os_string();
+                d.push(suf);
+                let _ = std::fs::copy(&src, PathBuf::from(d));
+            }
+        }
+    }
+    Ok(dst)
+}
+
+/// 用本机 Edge/Chrome 打开用户资料副本，经 CDP 读 Cookie（浏览器自己解密 v20）。
+pub(super) fn load_cookies_from_user_data(
+    user_data: &Path,
+    domains: Option<&[String]>,
+) -> anyhow::Result<Vec<CookieRec>> {
+    if cfg!(test) {
+        anyhow::bail!("unit test 不启动本机浏览器读 Cookie");
+    }
+    let bin = find_chromium_bin().ok_or_else(|| {
+        anyhow::anyhow!("没有本机 Edge/Chrome。Windows 自带 Edge 即可，无需 Lightpanda/Python")
+    })?;
+    if !user_data.is_dir() {
+        anyhow::bail!("没有 User Data: {}", user_data.display());
+    }
+    let tmp = copy_cookie_skeleton(user_data)?;
+    let log = rxt_dir().join("http-cookie-cdp.log");
+    let logf = std::fs::File::create(&log)?;
+    let mut names = vec!["Default".to_string()];
+    if let Ok(rd) = std::fs::read_dir(user_data) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("Profile ") && names.len() < 4 {
+                names.push(n);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    for prof in &names {
+        let port = free_port()?;
+        let mut child_ok: Option<Child> = None;
+        for extra in chromium_flag_sets() {
+            let child = match spawn_chromium_once(&bin, port, 64, &logf, &tmp, extra, Some(prof)) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if wait_cdp(port, child.id(), Duration::from_secs(20)) {
+                child_ok = Some(child);
+                break;
+            }
+            let mut c = child;
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        let Some(mut child) = child_ok else {
+            continue;
+        };
+        match Cdp::connect(port).and_then(|mut c| c.fetch_all_cookies()) {
+            Ok(mut recs) => all.append(&mut recs),
+            Err(e) => eprintln!("# CDP cookie {prof}: {e}"),
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Some(ds) = domains {
+        all.retain(|c| ds.iter().any(|d| super::domain_matches(&c.domain, d)));
+    }
+    if all.is_empty() {
+        anyhow::bail!("Edge/Chrome CDP 未读到 Cookie");
+    }
+    Ok(all)
 }
 
 fn free_port() -> anyhow::Result<u16> {
@@ -478,6 +650,18 @@ impl Cdp {
         let (ws, _) = tungstenite::client::client(req, stream)
             .map_err(|e| anyhow::anyhow!("CDP websocket: {e}"))?;
         Ok(Self { ws, next_id: 0 })
+    }
+
+    fn fetch_all_cookies(&mut self) -> anyhow::Result<Vec<CookieRec>> {
+        let r = self
+            .call("Storage.getCookies", json!({}), None)
+            .or_else(|_| self.call("Network.getAllCookies", json!({}), None))?;
+        let arr = r
+            .get("cookies")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(arr.iter().filter_map(cookie_from_cdp).collect())
     }
 
     fn call(&mut self, method: &str, params: Value, sid: Option<&str>) -> anyhow::Result<Value> {
@@ -1472,6 +1656,23 @@ mod tests {
             "/devtools/browser/abc"
         );
         assert_eq!(ws_path_from_debugger_url("ws://127.0.0.1:9222/"), "/");
+    }
+
+    #[test]
+    fn cookie_from_cdp_json() {
+        let v = json!({
+            "name": "sid",
+            "value": "abc",
+            "domain": ".ex.com",
+            "path": "/",
+            "secure": true,
+            "httpOnly": true,
+            "expires": 2000000000.0
+        });
+        let c = cookie_from_cdp(&v).unwrap();
+        assert_eq!(c.name, "sid");
+        assert_eq!(c.value, "abc");
+        assert!(c.secure && c.http_only);
     }
 
     #[test]

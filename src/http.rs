@@ -1074,6 +1074,30 @@ const BROWSER_ALL: &[&str] = &[
     "tabbit",
 ];
 
+fn browser_search_order() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &[
+            "edge",
+            "chrome",
+            "firefox",
+            "brave",
+            "chromium",
+            "opera",
+            "vivaldi",
+            "arc",
+            "zen",
+            "librewolf",
+            "opera-gx",
+            "tabbit",
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        BROWSER_ALL
+    }
+}
+
 fn load_browser(
     name: &str,
     domains: Option<Vec<String>>,
@@ -1081,12 +1105,18 @@ fn load_browser(
     let raw = name.trim();
     let key = raw.to_ascii_lowercase().replace('_', "-");
     if Path::new(raw).is_dir() {
+        match cdp::load_cookies_from_user_data(Path::new(raw), domains.as_deref()) {
+            Ok(recs) if recs.iter().any(|c| !c.value.is_empty()) => {
+                return Ok((raw.to_string(), recs));
+            }
+            _ => {}
+        }
         let recs = load_chromium_dir(Path::new(raw), domains)?;
         return Ok((raw.to_string(), recs));
     }
     if key == "auto" {
         let mut errs = Vec::new();
-        for cand in BROWSER_ALL {
+        for cand in browser_search_order() {
             match load_browser(cand, domains.clone()) {
                 Ok(pair) if !pair.1.is_empty() => return Ok(pair),
                 Ok(_) => errs.push(format!("{cand}: 0 cookies")),
@@ -1094,7 +1124,7 @@ fn load_browser(
             }
         }
         anyhow::bail!(
-            "auto 未读到浏览器 Cookie。{}\nChrome/Edge 127+ 常需管理员；Firefox / --cookie-json 更稳。",
+            "auto 未读到浏览器 Cookie。{}\nWindows 只需自带 Edge；或 --cookie-json。",
             errs.join(" | ")
         );
     }
@@ -1118,14 +1148,36 @@ fn load_browser(
     if key == "tabbit" || key == "tabbit-browser" {
         return load_tabbit(domains);
     }
+    if matches!(
+        key.as_str(),
+        "edge" | "chrome" | "brave" | "chromium" | "vivaldi" | "opera" | "opera-gx" | "operagx"
+    ) {
+        if let Some(dir) = cookies_native::chromium_user_data(&key) {
+            match cdp::load_cookies_from_user_data(&dir, domains.as_deref()) {
+                Ok(recs) if recs.iter().any(|c| !c.value.is_empty()) => {
+                    return Ok((format!("{key}-cdp"), recs));
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("# {key} CDP cookie: {e}"),
+            }
+        }
+    }
     match cookies_native::load(&key, domains.clone()) {
+        Ok(pair) if pair.1.iter().any(|c| !c.value.is_empty()) => return Ok(pair),
         Ok(pair) if !pair.1.is_empty() => return Ok(pair),
         Ok(_) => {}
         Err(e) => eprintln!("# native cookie {key}: {e}"),
     }
-    #[cfg(not(feature = "cookies"))]
+    #[cfg(all(not(feature = "cookies"), not(windows)))]
     {
         return load_browser_python(&key, domains);
+    }
+    #[cfg(all(not(feature = "cookies"), windows))]
+    {
+        anyhow::bail!(
+            "未能从 {key} 读到 Cookie。Windows 只需自带 Edge（rxt 会用 Edge 自己解密）。\n\
+             请关掉 Edge 再试，或 Cookie-Editor 导出 --cookie-json。"
+        );
     }
     #[cfg(feature = "cookies")]
     {

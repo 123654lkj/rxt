@@ -63,7 +63,7 @@ pub(super) fn load_chromium_user_data(
     Ok(recs)
 }
 
-fn chromium_user_data(name: &str) -> Option<PathBuf> {
+pub(super) fn chromium_user_data(name: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let local = std::env::var("LOCALAPPDATA").ok()?;

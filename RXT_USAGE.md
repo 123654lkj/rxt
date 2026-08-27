@@ -264,7 +264,7 @@ rxt http purge                                    # 只删会话白名单文件�
 rxt http --engine static open URL                 # 强制纯 HTTP（无 JS）
 rxt http --engine edge open URL                   # 强制本机 Edge/Chrome（Windows 默认走这条）
 # RXT_HTTP_BROWSER=C:\...\msedge.exe  指定浏览器
-# Cookie：原生读 Firefox sqlite，不必 rookiepy；Chrome/Edge 127+ 磁盘值是 v20，请 firefox 或 --cookie-json
+# Cookie：Windows 用自带 Edge 经 CDP 解密（不必 Firefox/Python）；也可 --cookie-json
 rxt http import --browser firefox                 # Firefox
 rxt http import --browser edge                    # Edge（127+ 常需管理员）
 rxt http import --browser tabbit                  # Tabbit（扫 User Data）
