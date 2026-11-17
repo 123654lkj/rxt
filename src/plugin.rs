@@ -267,7 +267,16 @@ fn spawn(
     group: Option<&str>,
     plugin_name: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut c = Command::new(exe);
+    let mut 启动路径 = exe.to_path_buf();
+    if cfg!(windows) && exe.extension().is_some_and(|扩展| 扩展.eq_ignore_ascii_case("cmd")) {
+        if let Some(名称) = plugin_name.filter(|名称| is_stdlib(名称)) {
+            let 标准正文 = format!("@echo off\r\nset \"RXT_PLUGIN_NAME={名称}\"\r\n\"{}\" %*\r\n", tools_bin().display());
+            if fs::read_to_string(exe).ok().as_deref() == Some(标准正文.as_str()) {
+                启动路径 = tools_bin();
+            }
+        }
+    }
+    let mut c = Command::new(&启动路径);
     c.args(args);
     if let Some(h) = host {
         c.env("RXT_HOST", h);
@@ -282,7 +291,7 @@ fn spawn(
     if st.success() {
         Ok(())
     } else {
-        anyhow::bail!("插件 {} 退出 {}", exe.display(), st.code().unwrap_or(-1))
+        Err(crate::common::CliExit(st.code().unwrap_or(1)).into())
     }
 }
 

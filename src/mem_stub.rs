@@ -22,3 +22,8 @@ pub fn run_layers(_f: &str) -> anyhow::Result<()> {
 pub fn run_help() -> anyhow::Result<()> {
     anyhow::bail!("此 rxt 未启用 http feature（mem 不可用）。")
 }
+
+pub fn configure(_json: bool, _timeout: Option<u64>) {}
+pub fn run_supersede(_old: i64, _new: Option<i64>, _reason: &str) -> anyhow::Result<()> {
+    anyhow::bail!("此 rxt 未启用 http feature（mem 不可用）。")
+}

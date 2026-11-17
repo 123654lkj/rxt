@@ -20,6 +20,8 @@ rxt plugin new hello --body 'echo hi'
 rxt hello
 ```
 
+0.10.2：`mem` 增加文件/stdin、supersede、`--json`、`--timeout`，标准输出无 BOM。见 [记忆 CLI 与 HTTP 映射](docs/MEM.md)。
+
 ---
 
 ## 为什么叫这个名字

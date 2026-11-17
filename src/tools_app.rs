@@ -249,6 +249,12 @@ pub enum Command {
     },
     #[command(about = "星枢记忆", disable_help_subcommand = true)]
     Mem {
+        /// 输出完整 JSON
+        #[arg(long, global = true)]
+        json: bool,
+        /// 整个 mem 请求预算（毫秒）；显式设置时不走 SSH 降级
+        #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
         #[command(subcommand)]
         action: MemAction,
     },
@@ -1066,11 +1072,27 @@ pub enum MemAction {
     /// 保存记忆 → POST /memory/add
     #[command(about = "保存记忆到星枢")]
     Save {
-        content: String,
+        #[arg(required_unless_present_any = ["file", "stdin"], conflicts_with_all = ["file", "stdin"])]
+        content: Option<String>,
+        /// UTF-8 正文文件（保留换行）
+        #[arg(long, conflicts_with = "stdin")]
+        file: Option<PathBuf>,
+        /// 从标准输入读取 UTF-8 正文
+        #[arg(long)]
+        stdin: bool,
         #[arg(long, default_value = "fact")]
         category: String,
         #[arg(long, default_value_t = 0.6)]
         importance: f64,
+    },
+    /// 废止旧记忆 → POST /memory/supersede
+    Supersede {
+        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+        old: i64,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        by: Option<i64>,
+        #[arg(long, default_value = "")]
+        reason: String,
     },
     /// 搜索 → POST /ask
     #[command(about = "星枢 /ask 搜索（contract+pack）", visible_alias = "ask")]
@@ -1623,23 +1645,46 @@ fn execute_command(
             patch::run(&paths, reverse, check, output.as_deref())?;
         }
         Command::Py { code, file } => py::run(code.as_deref(), file.as_ref())?,
-        Command::Mem { action } => match action {
-            MemAction::Save {
-                content,
-                category,
-                importance,
-            } => mem::run_save(&content, &category, importance)?,
-            MemAction::Search { query, top_k } => mem::run_search(&query, top_k)?,
-            MemAction::Stats => mem::run_stats()?,
-            MemAction::Extract {
-                transcript,
-                focus,
-                dry_run,
-            } => mem::run_extract(&transcript, &focus, dry_run)?,
-            MemAction::Bootstrap { focus, budget } => mem::run_bootstrap(&focus, budget)?,
-            MemAction::Layers { focus } => mem::run_layers(&focus)?,
-            MemAction::Help => mem::run_help()?,
-        },
+        Command::Mem {
+            action,
+            json,
+            timeout,
+        } => {
+            mem::configure(json, timeout);
+            match action {
+                MemAction::Save {
+                    content,
+                    file,
+                    stdin,
+                    category,
+                    importance,
+                } => {
+                    use std::io::Read;
+                    let 正文 = if let Some(路径) = file {
+                        std::fs::read_to_string(路径)?
+                    } else if stdin {
+                        let mut 正文 = String::new();
+                        std::io::stdin().read_to_string(&mut 正文)?;
+                        正文
+                    } else {
+                        content.unwrap_or_default()
+                    };
+                    anyhow::ensure!(!正文.trim().is_empty(), "记忆正文不能为空");
+                    mem::run_save(正文.trim_start_matches('\u{feff}'), &category, importance)?;
+                }
+                MemAction::Supersede { old, by, reason } => mem::run_supersede(old, by, &reason)?,
+                MemAction::Search { query, top_k } => mem::run_search(&query, top_k)?,
+                MemAction::Stats => mem::run_stats()?,
+                MemAction::Extract {
+                    transcript,
+                    focus,
+                    dry_run,
+                } => mem::run_extract(&transcript, &focus, dry_run)?,
+                MemAction::Bootstrap { focus, budget } => mem::run_bootstrap(&focus, budget)?,
+                MemAction::Layers { focus } => mem::run_layers(&focus)?,
+                MemAction::Help => mem::run_help()?,
+            }
+        }
         Command::Tree {
             path,
             depth,

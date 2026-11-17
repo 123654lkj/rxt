@@ -119,26 +119,27 @@ pub fn setup_utf8_console() {
     // On non-Windows, no action needed
 }
 
-/// Write a UTF-8 BOM (3 bytes: EF BB BF) to stdout when in agent/capture mode.
-///
-/// 解决：Agent/PowerShell 管道捕获时把 UTF-8 中文当系统 ANSI 解码导致乱码。
-/// 关闭：`RXT_NO_BOM=1`（即使管道也不写 BOM）。
-pub fn maybe_write_bom(out: &mut dyn std::io::Write) -> std::io::Result<()> {
-    if std::env::var("RXT_NO_BOM")
-        .ok()
-        .as_deref()
-        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-    if agent_capture_mode() {
-        out.write_all(&[0xEF, 0xBB, 0xBF])?;
-    }
+/// CLI 默认无 BOM；保留入口兼容现有调用者。
+pub fn maybe_write_bom(_out: &mut dyn std::io::Write) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 带 UTF-8 控制台 + 可选 BOM 的 println 封装（pack/info 等入口复用）。
+/// 保留插件及请求的明确退出码。
+#[derive(Debug)]
+pub struct CliExit(pub i32);
+impl std::fmt::Display for CliExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "退出码 {}", self.0) }
+}
+impl std::error::Error for CliExit {}
+
+pub fn finish(结果: anyhow::Result<()>) {
+    if let Err(错误) = 结果 {
+        eprintln!("Error: {错误:#}");
+        std::process::exit(错误.downcast_ref::<CliExit>().map_or(1, |码| 码.0));
+    }
+}
+
+/// UTF-8 无 BOM 的 println 封装（pack/info 等入口复用）。
 pub fn println_utf8(s: &str) {
     setup_utf8_console();
     let mut stdout = std::io::stdout().lock();

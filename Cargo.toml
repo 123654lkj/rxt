@@ -1,6 +1,6 @@
 [package]
 name = "rxt"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 description = "Run eXternal Tools — tiny core host that runs installable plugins"
 repository = "https://github.com/123654lkj/rxt"
